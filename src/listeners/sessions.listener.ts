@@ -27,6 +27,7 @@ export class SessionsListener {
         session_end: session.session_end ? new Date(session.session_end) : null,
         total_duration: session.total_duration || null,
         created_at: session.created_at ? new Date(session.created_at) : new Date(),
+        updated_at: session.updated_at ? new Date(session.updated_at) : new Date(),
       };
 
       await this.rawService.saveSession(sessionRaw);
@@ -51,6 +52,7 @@ export class SessionsListener {
         session_end: session.session_end ? new Date(session.session_end) : null,
         total_duration: session.total_duration || null,
         created_at: session.created_at ? new Date(session.created_at) : new Date(),
+        updated_at: session.updated_at ? new Date(session.updated_at) : new Date(),
       };
 
       // Para actualizaciones, insertamos de nuevo (ClickHouse manejará la deduplicación si es necesario)

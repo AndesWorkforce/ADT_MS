@@ -35,6 +35,9 @@ export class AgentSessionsListener {
         created_at: agentSession.created_at
           ? new Date(agentSession.created_at)
           : new Date(),
+        updated_at: agentSession.updated_at
+          ? new Date(agentSession.updated_at)
+          : new Date(),
       };
 
       await this.rawService.saveAgentSession(agentSessionRaw);
@@ -68,6 +71,9 @@ export class AgentSessionsListener {
         total_duration: agentSession.total_duration || null,
         created_at: agentSession.created_at
           ? new Date(agentSession.created_at)
+          : new Date(),
+        updated_at: agentSession.updated_at
+          ? new Date(agentSession.updated_at)
           : new Date(),
       };
 
