@@ -309,6 +309,37 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Eliminar tablas RAW (solo en desarrollo)
+   * Esto permite resetear las tablas y recrearlas con la estructura correcta
+   */
+  async dropRawTables(): Promise<void> {
+    if (envs.environment === 'production') {
+      this.logger.warn('⚠️ Cannot drop tables in production environment');
+      return;
+    }
+
+    const dbName = envs.clickhouse.database;
+
+    try {
+      const tables = ['events_raw', 'sessions_raw', 'agent_sessions_raw', 'contractor_info_raw'];
+      
+      for (const table of tables) {
+        try {
+          await this.command(`DROP TABLE IF EXISTS ${dbName}.${table}`);
+          this.logger.log(`✅ Dropped table ${table}`);
+        } catch (error) {
+          // Ignorar errores si la tabla no existe
+          this.logger.debug(`Table ${table} does not exist or could not be dropped: ${error.message}`);
+        }
+      }
+      
+      this.logger.log('✅ All RAW tables dropped');
+    } catch (error) {
+      this.logger.warn(`⚠️ Error dropping RAW tables: ${error.message}`);
+    }
+  }
+
+  /**
    * Crear tablas RAW si no existen
    * Estas tablas son usadas por ADT_MS para almacenar datos raw de eventos
    */
@@ -338,6 +369,7 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
       this.logger.log('✅ Table events_raw verified/created');
 
       // Crear tabla sessions_raw
+      // Usa ReplacingMergeTree para manejar actualizaciones (cuando se cierra una sesión)
       await this.command(`
         CREATE TABLE IF NOT EXISTS ${dbName}.sessions_raw (
           session_id String,
@@ -345,15 +377,17 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
           session_start DateTime,
           session_end Nullable(DateTime),
           total_duration Nullable(UInt32),
-          created_at DateTime DEFAULT now()
-        ) ENGINE = MergeTree()
+          created_at DateTime DEFAULT now(),
+          updated_at DateTime DEFAULT now()
+        ) ENGINE = ReplacingMergeTree(updated_at)
         PARTITION BY toDate(session_start)
-        ORDER BY (contractor_id, session_start, session_id)
+        ORDER BY (session_id, contractor_id, session_start)
         TTL session_start + INTERVAL 365 DAY
       `);
       this.logger.log('✅ Table sessions_raw verified/created');
 
       // Crear tabla agent_sessions_raw
+      // Usa ReplacingMergeTree para manejar actualizaciones (cuando se cierra una sesión)
       await this.command(`
         CREATE TABLE IF NOT EXISTS ${dbName}.agent_sessions_raw (
           agent_session_id String,
@@ -363,10 +397,11 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
           session_start DateTime,
           session_end Nullable(DateTime),
           total_duration Nullable(UInt32),
-          created_at DateTime DEFAULT now()
-        ) ENGINE = MergeTree()
+          created_at DateTime DEFAULT now(),
+          updated_at DateTime DEFAULT now()
+        ) ENGINE = ReplacingMergeTree(updated_at)
         PARTITION BY toDate(session_start)
-        ORDER BY (contractor_id, agent_id, session_start, agent_session_id)
+        ORDER BY (agent_session_id, contractor_id, agent_id, session_start)
         TTL session_start + INTERVAL 365 DAY
       `);
       this.logger.log('✅ Table agent_sessions_raw verified/created');

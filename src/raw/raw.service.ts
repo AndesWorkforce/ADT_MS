@@ -57,6 +57,7 @@ export class RawService {
         session_end: session.session_end || null,
         total_duration: session.total_duration || null,
         created_at: session.created_at,
+        updated_at: session.updated_at,
       });
 
       this.logger.debug(
@@ -82,6 +83,7 @@ export class RawService {
         session_end: agentSession.session_end || null,
         total_duration: agentSession.total_duration || null,
         created_at: agentSession.created_at,
+        updated_at: agentSession.updated_at,
       });
 
       this.logger.debug(

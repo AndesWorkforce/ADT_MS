@@ -7,5 +7,6 @@ export class AgentSessionRawDto {
   session_end: Date | null;
   total_duration: number | null;
   created_at: Date;
+  updated_at: Date;
 }
 
