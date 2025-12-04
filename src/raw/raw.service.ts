@@ -19,6 +19,36 @@ export class RawService {
    */
   async saveEvent(event: EventRawDto): Promise<void> {
     try {
+      // Logs de prueba para MVs: contar antes
+      const enableMvLogs = process.env.ETL_DEBUG_LOGS === '1';
+      const contractorId = event.contractor_id;
+      const workdayStr = (
+        event.timestamp ? new Date(event.timestamp) : new Date()
+      )
+        .toISOString()
+        .split('T')[0];
+
+      let beforeBeats = 0;
+      let beforeApps = 0;
+
+      if (enableMvLogs && contractorId) {
+        try {
+          const b1 = await this.clickHouseService.query<{ cnt: number }>(`
+            SELECT count() AS cnt
+            FROM contractor_activity_15s
+            WHERE contractor_id = '${contractorId}' AND workday = toDate('${workdayStr}')
+          `);
+          beforeBeats = Number(b1[0]?.cnt || 0);
+
+          const b2 = await this.clickHouseService.query<{ cnt: number }>(`
+            SELECT count() AS cnt
+            FROM app_usage_summary
+            WHERE contractor_id = '${contractorId}' AND workday = toDate('${workdayStr}')
+          `);
+          beforeApps = Number(b2[0]?.cnt || 0);
+        } catch {}
+      }
+
       await this.clickHouseService.insert('events_raw', {
         event_id: event.event_id,
         contractor_id: event.contractor_id,
@@ -26,9 +56,10 @@ export class RawService {
         session_id: event.session_id || null,
         agent_session_id: event.agent_session_id || null,
         timestamp: event.timestamp,
-        payload: typeof event.payload === 'string' 
-          ? event.payload 
-          : JSON.stringify(event.payload),
+        payload:
+          typeof event.payload === 'string'
+            ? event.payload
+            : JSON.stringify(event.payload),
         created_at: event.created_at,
       });
 
@@ -36,6 +67,39 @@ export class RawService {
       this.logger.debug(
         `✅ RawService: Event saved - Event ID: ${event.event_id}, Contractor: ${event.contractor_id}`,
       );
+
+      // Logs de verificación de MVs (post-insert)
+      if (enableMvLogs && contractorId) {
+        try {
+          // pequeña espera para permitir que las MVs disparen
+          await new Promise((r) => setTimeout(r, 200));
+
+          const a1 = await this.clickHouseService.query<{ cnt: number }>(`
+            SELECT count() AS cnt
+            FROM contractor_activity_15s
+            WHERE contractor_id = '${contractorId}' AND workday = toDate('${workdayStr}')
+          `);
+          const afterBeats = Number(a1[0]?.cnt || 0);
+
+          const a2 = await this.clickHouseService.query<{ cnt: number }>(`
+            SELECT count() AS cnt
+            FROM app_usage_summary
+            WHERE contractor_id = '${contractorId}' AND workday = toDate('${workdayStr}')
+          `);
+          const afterApps = Number(a2[0]?.cnt || 0);
+
+          const dBeats = afterBeats - beforeBeats;
+          const dApps = afterApps - beforeApps;
+
+          this.logger.log(
+            `🧪 MV check for contractor ${contractorId} on ${workdayStr} → ` +
+              `activity_15s: ${beforeBeats.toLocaleString('en-US')} → ${afterBeats.toLocaleString('en-US')} (Δ ${dBeats}), ` +
+              `app_usage_summary: ${beforeApps.toLocaleString('en-US')} → ${afterApps.toLocaleString('en-US')} (Δ ${dApps})`,
+          );
+        } catch (err) {
+          this.logger.debug(`MV check skipped: ${(err as Error).message}`);
+        }
+      }
     } catch (error) {
       this.logger.error(
         `❌ RawService: Error saving event - Event ID: ${event.event_id}, Error: ${error.message}`,
@@ -124,4 +188,3 @@ export class RawService {
     }
   }
 }
-

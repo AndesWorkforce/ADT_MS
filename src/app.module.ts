@@ -3,6 +3,8 @@ import { ConfigModule } from '@nestjs/config';
 
 import { AppService } from './app.service';
 import { ClickHouseModule } from './clickhouse/clickhouse.module';
+import { EtlModule } from './etl/etl.module';
+import { AdtListener } from './listeners/adt.listener';
 import { AgentSessionsListener } from './listeners/agent-sessions.listener';
 import { ContractorsListener } from './listeners/contractors.listener';
 import { EventsListener } from './listeners/events.listener';
@@ -16,12 +18,15 @@ import { RawModule } from './raw/raw.module';
     }),
     ClickHouseModule,
     RawModule,
+    EtlModule,
   ],
   controllers: [
+    // NATS Listeners
     EventsListener,
     SessionsListener,
     AgentSessionsListener,
     ContractorsListener,
+    AdtListener,
   ],
   providers: [AppService],
 })
