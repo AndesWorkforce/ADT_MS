@@ -557,6 +557,30 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
       `);
       this.logger.log('✅ Table domains_dimension verified/created');
 
+      // Crear tabla teams_dimension
+      await this.command(`
+        CREATE TABLE IF NOT EXISTS ${dbName}.teams_dimension (
+          team_id String,
+          team_name String,
+          created_at DateTime DEFAULT now(),
+          updated_at DateTime DEFAULT now()
+        ) ENGINE = ReplacingMergeTree(updated_at)
+        ORDER BY team_id
+      `);
+      this.logger.log('✅ Table teams_dimension verified/created');
+
+      // Crear tabla clients_dimension
+      await this.command(`
+        CREATE TABLE IF NOT EXISTS ${dbName}.clients_dimension (
+          client_id String,
+          client_name String,
+          created_at DateTime DEFAULT now(),
+          updated_at DateTime DEFAULT now()
+        ) ENGINE = ReplacingMergeTree(updated_at)
+        ORDER BY client_id
+      `);
+      this.logger.log('✅ Table clients_dimension verified/created');
+
       this.logger.log('✅ All dimensions tables are ready');
     } catch (error) {
       const errorMessage =

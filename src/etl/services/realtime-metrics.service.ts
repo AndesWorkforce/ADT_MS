@@ -265,6 +265,140 @@ export class RealtimeMetricsService {
   }
 
   /**
+   * Obtiene métricas en tiempo real de todos los contratistas que tienen métricas para un día específico.
+   * Solo devuelve contratistas que tienen datos (total_beats > 0).
+   * Enriquece los datos con información del contractor (nombre, email, job_position, country, client, team).
+   *
+   * @param workday Fecha del día (por defecto: hoy)
+   * @param useCache Si usar caché (default: true)
+   * @returns Array de métricas de productividad por contractor con información enriquecida
+   */
+  async getAllRealtimeMetrics(
+    workday?: Date,
+    useCache: boolean = true,
+  ): Promise<any[]> {
+    // Crear una copia del Date para no modificar el original
+    const workdayDate = workday ? new Date(workday) : new Date();
+    workdayDate.setUTCHours(0, 0, 0, 0); // Usar UTC para evitar problemas de zona horaria
+    const workdayStr = workdayDate.toISOString().split('T')[0];
+
+    // Obtener todos los contractor_id únicos que tienen datos para este día
+    const contractorsQuery = `
+      SELECT DISTINCT contractor_id
+      FROM contractor_activity_15s
+      WHERE toDate(beat_timestamp) = '${workdayStr}'
+    `;
+
+    const contractors = await this.clickHouseService.query<{
+      contractor_id: string;
+    }>(contractorsQuery);
+
+    if (contractors.length === 0) {
+      return [];
+    }
+
+    // Calcular métricas para cada contractor en paralelo
+    const metricsPromises = contractors.map((contractor) =>
+      this.getRealtimeMetrics(contractor.contractor_id, workdayDate, useCache),
+    );
+
+    const allMetrics = await Promise.all(metricsPromises);
+
+    // Filtrar solo aquellos que tienen métricas (total_beats > 0)
+    const metricsWithData = allMetrics.filter(
+      (metric) => metric.total_beats > 0,
+    );
+
+    if (metricsWithData.length === 0) {
+      return [];
+    }
+
+    // Enriquecer con información del contractor usando JOINs
+    const enrichedMetrics =
+      await this.enrichMetricsWithContractorInfo(metricsWithData);
+
+    return enrichedMetrics;
+  }
+
+  /**
+   * Enriquece las métricas con información del contractor, client y team usando JOINs.
+   */
+  private async enrichMetricsWithContractorInfo(
+    metrics: any[],
+  ): Promise<any[]> {
+    if (metrics.length === 0) {
+      return [];
+    }
+
+    // Extraer los contractor_ids únicos
+    const contractorIds = [...new Set(metrics.map((m) => m.contractor_id))];
+    const contractorIdsList = contractorIds.map((id) => `'${id}'`).join(',');
+
+    // Query para obtener información del contractor con JOINs a teams y clients
+    const enrichmentQuery = `
+      SELECT 
+        c.contractor_id,
+        c.name,
+        c.email,
+        c.job_position,
+        c.country,
+        c.client_id,
+        c.team_id,
+        COALESCE(cl.client_name, 'N/A') as client_name,
+        COALESCE(t.team_name, 'N/A') as team_name
+      FROM (
+        SELECT 
+          contractor_id,
+          name,
+          email,
+          job_position,
+          country,
+          client_id,
+          team_id
+        FROM contractor_info_raw FINAL
+        WHERE contractor_id IN (${contractorIdsList})
+      ) c
+      LEFT JOIN (
+        SELECT 
+          client_id,
+          client_name
+        FROM clients_dimension FINAL
+      ) cl ON c.client_id = cl.client_id
+      LEFT JOIN (
+        SELECT 
+          team_id,
+          team_name
+        FROM teams_dimension FINAL
+      ) t ON c.team_id = t.team_id
+    `;
+
+    const contractorInfo =
+      await this.clickHouseService.query<any>(enrichmentQuery);
+
+    // Crear un mapa para acceso rápido
+    const infoMap = new Map<string, any>();
+    contractorInfo.forEach((info) => {
+      infoMap.set(info.contractor_id, info);
+    });
+
+    // Enriquecer cada métrica con la información del contractor
+    return metrics.map((metric) => {
+      const info = infoMap.get(metric.contractor_id) || {};
+      return {
+        ...metric,
+        contractor_name: info.name || 'N/A',
+        contractor_email: info.email || null,
+        job_position: info.job_position || 'N/A',
+        country: info.country || 'N/A',
+        client_id: info.client_id || 'N/A',
+        client_name: info.client_name || 'N/A',
+        team_id: info.team_id || null,
+        team_name: info.team_name || 'N/A',
+      };
+    });
+  }
+
+  /**
    * Limpia el caché expirado.
    */
   clearExpiredCache() {

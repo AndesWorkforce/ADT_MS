@@ -530,27 +530,72 @@ async function populateTestData() {
     `⏱️  Beats por día: ${beatsPerDay} (~${WORK_HOURS_PER_DAY} horas)\n`,
   );
 
-  // Generar fechas (hoy y 9 días anteriores => 10 días en total)
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  // Generar fechas hasta el 5 de diciembre de 2025 (incluyendo ese día)
+  // Genera NUM_DAYS días hacia atrás desde esa fecha
+  const targetDate = new Date('2025-12-05T00:00:00.000Z');
+  targetDate.setUTCHours(0, 0, 0, 0);
   const dates: Date[] = [];
   for (let i = 0; i < NUM_DAYS; i++) {
-    const date = new Date(today);
-    date.setDate(date.getDate() - i);
+    const date = new Date(targetDate);
+    date.setUTCDate(date.getUTCDate() - i);
     dates.push(date);
   }
+
+  console.log(
+    `📅 Generando datos desde ${dates[dates.length - 1].toISOString().split('T')[0]} hasta ${dates[0].toISOString().split('T')[0]}\n`,
+  );
 
   // Preparar datos para inserción
   const eventsRaw: any[] = [];
   const sessionsRaw: any[] = [];
   const agentSessionsRaw: any[] = [];
   const contractorInfoRaw: any[] = [];
+  const teamsDimension: any[] = [];
+  const clientsDimension: any[] = [];
+
+  // Generar un conjunto fijo de teams y clients (compartidos entre contractors)
+  const teams = [
+    { id: generateId('team'), name: 'Development' },
+    { id: generateId('team'), name: 'Support' },
+    { id: generateId('team'), name: 'DevOps' },
+    { id: generateId('team'), name: 'QA' },
+  ];
+
+  const clients = [
+    { id: generateId('client'), name: 'Tech Corporation' },
+    { id: generateId('client'), name: 'RTM Corporation' },
+    { id: generateId('client'), name: 'IBM Connect' },
+    { id: generateId('client'), name: 'Bamboo' },
+    { id: generateId('client'), name: 'Qilla' },
+  ];
+
+  // Poblar tablas de dimensiones
+  teams.forEach((team) => {
+    teamsDimension.push({
+      team_id: team.id,
+      team_name: team.name,
+      created_at: formatDateForClickHouse(new Date()),
+      updated_at: formatDateForClickHouse(new Date()),
+    });
+  });
+
+  clients.forEach((client) => {
+    clientsDimension.push({
+      client_id: client.id,
+      client_name: client.name,
+      created_at: formatDateForClickHouse(new Date()),
+      updated_at: formatDateForClickHouse(new Date()),
+    });
+  });
 
   // Generar datos para cada contratista
   for (const contractor of contractors) {
     const agentId = generateId('agent');
-    const clientId = generateId('client');
-    const teamId = generateId('team');
+    // Asignar aleatoriamente un team y client del conjunto fijo
+    const team = teams[Math.floor(Math.random() * teams.length)];
+    const client = clients[Math.floor(Math.random() * clients.length)];
+    const clientId = client.id;
+    const teamId = team.id;
 
     // Información del contratista
     const contractorCreatedAt = new Date(dates[0]);
@@ -652,12 +697,38 @@ async function populateTestData() {
   console.log(`   - Events: ${eventsRaw.length}`);
   console.log(`   - Sessions: ${sessionsRaw.length}`);
   console.log(`   - Agent Sessions: ${agentSessionsRaw.length}`);
-  console.log(`   - Contractors: ${contractorInfoRaw.length}\n`);
+  console.log(`   - Contractors: ${contractorInfoRaw.length}`);
+  console.log(`   - Teams: ${teamsDimension.length}`);
+  console.log(`   - Clients: ${clientsDimension.length}\n`);
 
   // Insertar datos en ClickHouse
   console.log('💾 Insertando datos en ClickHouse...\n');
 
   try {
+    // Insertar teams_dimension
+    if (teamsDimension.length > 0) {
+      await client.insert({
+        table: 'teams_dimension',
+        values: teamsDimension,
+        format: 'JSONEachRow',
+      });
+      console.log(
+        `✅ Insertados ${teamsDimension.length} registros en teams_dimension`,
+      );
+    }
+
+    // Insertar clients_dimension
+    if (clientsDimension.length > 0) {
+      await client.insert({
+        table: 'clients_dimension',
+        values: clientsDimension,
+        format: 'JSONEachRow',
+      });
+      console.log(
+        `✅ Insertados ${clientsDimension.length} registros en clients_dimension`,
+      );
+    }
+
     // Insertar contractor_info_raw
     if (contractorInfoRaw.length > 0) {
       await client.insert({

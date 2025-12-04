@@ -54,6 +54,14 @@ export class AdtListener {
 
       const results = await this.clickHouseService.query(query);
 
+      if (results.length === 0) {
+        this.logger.warn(
+          `⚠️ No daily metrics found for contractor ${contractorId} in the last ${days} days. ` +
+            `The table contractor_daily_metrics is empty. ` +
+            `You need to run the ETL first: GET /adt/etl/process-daily-metrics?from=YYYY-MM-DD&to=YYYY-MM-DD`,
+        );
+      }
+
       // Convertir workday de Date a string YYYY-MM-DD para consistencia
       return results.map((row: any) => ({
         ...row,
@@ -93,6 +101,32 @@ export class AdtListener {
       );
     } catch (error) {
       logError(this.logger, 'Error in getRealtimeMetrics', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Obtiene métricas de productividad en tiempo real de todos los contratistas que tienen métricas.
+   * Solo devuelve contratistas que tienen datos (total_beats > 0).
+   */
+  @MessagePattern(getMessagePattern('adt.getAllRealtimeMetrics'))
+  async getAllRealtimeMetrics(
+    @Payload()
+    data: {
+      workday?: string;
+      useCache?: boolean;
+    },
+  ) {
+    try {
+      const { workday, useCache = true } = data;
+      const workdayDate = workday ? new Date(workday) : undefined;
+
+      return await this.realtimeMetricsService.getAllRealtimeMetrics(
+        workdayDate,
+        useCache,
+      );
+    } catch (error) {
+      logError(this.logger, 'Error in getAllRealtimeMetrics', error);
       throw error;
     }
   }

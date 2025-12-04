@@ -187,4 +187,48 @@ export class RawService {
       throw error;
     }
   }
+
+  /**
+   * Guardar o actualizar team en la tabla teams_dimension
+   * Usa el motor ReplacingMergeTree, por lo que las actualizaciones son manejadas por ClickHouse
+   */
+  async saveTeam(teamId: string, teamName: string): Promise<void> {
+    try {
+      await this.clickHouseService.insert('teams_dimension', {
+        team_id: teamId,
+        team_name: teamName,
+        created_at: new Date(),
+        updated_at: new Date(),
+      });
+
+      this.logger.debug(
+        `Team saved to teams_dimension: ${teamId} - ${teamName}`,
+      );
+    } catch (error) {
+      logError(this.logger, 'Failed to save team to dimensions', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Guardar o actualizar client en la tabla clients_dimension
+   * Usa el motor ReplacingMergeTree, por lo que las actualizaciones son manejadas por ClickHouse
+   */
+  async saveClient(clientId: string, clientName: string): Promise<void> {
+    try {
+      await this.clickHouseService.insert('clients_dimension', {
+        client_id: clientId,
+        client_name: clientName,
+        created_at: new Date(),
+        updated_at: new Date(),
+      });
+
+      this.logger.debug(
+        `Client saved to clients_dimension: ${clientId} - ${clientName}`,
+      );
+    } catch (error) {
+      logError(this.logger, 'Failed to save client to dimensions', error);
+      throw error;
+    }
+  }
 }

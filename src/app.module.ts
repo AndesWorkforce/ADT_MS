@@ -7,6 +7,7 @@ import { EtlModule } from './etl/etl.module';
 import { AdtListener } from './listeners/adt.listener';
 import { AgentSessionsListener } from './listeners/agent-sessions.listener';
 import { ContractorsListener } from './listeners/contractors.listener';
+import { DimensionsListener } from './listeners/dimensions.listener';
 import { EventsListener } from './listeners/events.listener';
 import { SessionsListener } from './listeners/sessions.listener';
 import { RawModule } from './raw/raw.module';
@@ -26,6 +27,7 @@ import { RawModule } from './raw/raw.module';
     SessionsListener,
     AgentSessionsListener,
     ContractorsListener,
+    DimensionsListener,
     AdtListener,
   ],
   providers: [AppService],
