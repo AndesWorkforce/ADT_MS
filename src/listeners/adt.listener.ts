@@ -147,6 +147,10 @@ export class AdtListener {
       useCache?: boolean;
     },
   ) {
+    const pattern = getMessagePattern('adt.getAllRealtimeMetrics');
+    this.logger.log(`📥 Mensaje recibido en ADT_MS: ${pattern}`);
+    this.logger.debug(`📦 Payload recibido: ${JSON.stringify(data)}`);
+
     try {
       const {
         workday,
