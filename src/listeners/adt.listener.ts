@@ -95,6 +95,12 @@ export class AdtListener {
       useCache?: boolean;
     },
   ) {
+    const pattern = getMessagePattern('adt.getRealtimeMetrics');
+    this.logger.log(`📥 Mensaje recibido en ADT_MS: ${pattern}`);
+    this.logger.debug(`📦 Payload recibido: ${JSON.stringify(data)}`);
+    console.log(`[ADT_MS] 📥 Mensaje recibido: ${pattern}`);
+    console.log(`[ADT_MS] 📦 Payload:`, data);
+
     try {
       const { contractorId, workday, from, to, useCache = true } = data;
 
