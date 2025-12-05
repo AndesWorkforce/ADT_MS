@@ -23,9 +23,13 @@ const CLICKHOUSE_PASSWORD = process.env.CLICKHOUSE_PASSWORD || '';
 const CLICKHOUSE_DATABASE = process.env.CLICKHOUSE_DATABASE || 'metrics_db';
 
 // Configuración de datos de prueba
-const NUM_DAYS = 10;
-const WORK_HOURS_PER_DAY = 8;
+const WORK_HOURS_MIN = 6; // Horas mínimas de trabajo por día
+const WORK_HOURS_MAX = 8; // Horas máximas de trabajo por día
 const BEAT_INTERVAL_SECONDS = 15; // Cada heartbeat es de 15 segundos
+
+// Fechas de inicio y fin para generar datos
+const START_DATE = new Date('2025-11-20T00:00:00.000Z');
+const END_DATE = new Date('2025-12-05T00:00:00.000Z');
 
 const PRODUCTIVE_APPS = ['Code', 'Notion'];
 const NEUTRAL_APPS = ['Chrome', 'Edge', 'Slack', 'Teams'];
@@ -117,10 +121,15 @@ function formatDateForClickHouse(date: Date): string {
   return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
 
-// Calcular beats necesarios para ~8 horas
+// Calcular beats necesarios para un número de horas
 function calculateBeatsForWorkDay(workHours: number): number {
   const totalSeconds = workHours * 3600;
   return Math.floor(totalSeconds / BEAT_INTERVAL_SECONDS);
+}
+
+// Generar horas de trabajo aleatorias entre min y max
+function generateWorkHours(): number {
+  return WORK_HOURS_MIN + Math.random() * (WORK_HOURS_MAX - WORK_HOURS_MIN);
 }
 
 // Generar sesiones distribuidas a lo largo del día
@@ -524,25 +533,23 @@ async function populateTestData() {
     `👥 Generando datos para ${contractors.length} contratistas...\n`,
   );
 
-  // Calcular beats por día
-  const beatsPerDay = calculateBeatsForWorkDay(WORK_HOURS_PER_DAY);
-  console.log(
-    `⏱️  Beats por día: ${beatsPerDay} (~${WORK_HOURS_PER_DAY} horas)\n`,
-  );
-
-  // Generar fechas hasta el 5 de diciembre de 2025 (incluyendo ese día)
-  // Genera NUM_DAYS días hacia atrás desde esa fecha
-  const targetDate = new Date('2025-12-05T00:00:00.000Z');
-  targetDate.setUTCHours(0, 0, 0, 0);
+  // Generar fechas desde START_DATE hasta END_DATE (ambas incluidas)
   const dates: Date[] = [];
-  for (let i = 0; i < NUM_DAYS; i++) {
-    const date = new Date(targetDate);
-    date.setUTCDate(date.getUTCDate() - i);
-    dates.push(date);
+  const currentDate = new Date(START_DATE);
+  currentDate.setUTCHours(0, 0, 0, 0);
+  const endDate = new Date(END_DATE);
+  endDate.setUTCHours(0, 0, 0, 0);
+
+  while (currentDate <= endDate) {
+    dates.push(new Date(currentDate));
+    currentDate.setUTCDate(currentDate.getUTCDate() + 1);
   }
 
   console.log(
-    `📅 Generando datos desde ${dates[dates.length - 1].toISOString().split('T')[0]} hasta ${dates[0].toISOString().split('T')[0]}\n`,
+    `📅 Generando datos desde ${dates[0].toISOString().split('T')[0]} hasta ${dates[dates.length - 1].toISOString().split('T')[0]} (${dates.length} días)\n`,
+  );
+  console.log(
+    `⏱️  Horas de trabajo por día: ${WORK_HOURS_MIN} - ${WORK_HOURS_MAX} horas (variable)\n`,
   );
 
   // Preparar datos para inserción
@@ -617,6 +624,10 @@ async function populateTestData() {
 
     // Generar datos para cada día
     for (const day of dates) {
+      // Generar horas de trabajo aleatorias para este día (entre 6 y 8 horas)
+      const workHours = generateWorkHours();
+      const beatsPerDay = calculateBeatsForWorkDay(workHours);
+
       const sessions = generateSessionsForDay(
         day,
         contractor.contractor_id,
