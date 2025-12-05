@@ -54,6 +54,14 @@ export class AdtListener {
 
       const results = await this.clickHouseService.query(query);
 
+      if (results.length === 0) {
+        this.logger.warn(
+          `⚠️ No daily metrics found for contractor ${contractorId} in the last ${days} days. ` +
+            `The table contractor_daily_metrics is empty. ` +
+            `You need to run the ETL first: GET /adt/etl/process-daily-metrics?from=YYYY-MM-DD&to=YYYY-MM-DD`,
+        );
+      }
+
       // Convertir workday de Date a string YYYY-MM-DD para consistencia
       return results.map((row: any) => ({
         ...row,
@@ -71,7 +79,10 @@ export class AdtListener {
   }
 
   /**
-   * Obtiene métricas de productividad en tiempo real.
+   * Obtiene métricas de productividad en tiempo real para un contractor.
+   * Puede recibir:
+   * - workday: un día específico (YYYY-MM-DD)
+   * - from y to: un rango de fechas (YYYY-MM-DD) - devuelve métricas agregadas
    */
   @MessagePattern(getMessagePattern('adt.getRealtimeMetrics'))
   async getRealtimeMetrics(
@@ -79,13 +90,28 @@ export class AdtListener {
     data: {
       contractorId: string;
       workday?: string;
+      from?: string;
+      to?: string;
       useCache?: boolean;
     },
   ) {
     try {
-      const { contractorId, workday, useCache = true } = data;
-      const workdayDate = workday ? new Date(workday) : undefined;
+      const { contractorId, workday, from, to, useCache = true } = data;
 
+      // Si se proporciona from y to, usar rango de fechas
+      if (from && to) {
+        const fromDate = new Date(from);
+        const toDate = new Date(to);
+        return await this.realtimeMetricsService.getRealtimeMetricsForDateRange(
+          contractorId,
+          fromDate,
+          toDate,
+          useCache,
+        );
+      }
+
+      // Si solo se proporciona workday o ninguno, usar comportamiento original
+      const workdayDate = workday ? new Date(workday) : undefined;
       return await this.realtimeMetricsService.getRealtimeMetrics(
         contractorId,
         workdayDate,
@@ -93,6 +119,76 @@ export class AdtListener {
       );
     } catch (error) {
       logError(this.logger, 'Error in getRealtimeMetrics', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Obtiene métricas de productividad en tiempo real de todos los contratistas que tienen métricas.
+   * Solo devuelve contratistas que tienen datos (total_beats > 0).
+   *
+   * Puede recibir:
+   * - workday: un día específico (YYYY-MM-DD)
+   * - from y to: un rango de fechas (YYYY-MM-DD) - devuelve métricas agregadas
+   * - Filtros opcionales: name, job_position, country, client_id, team_id
+   */
+  @MessagePattern(getMessagePattern('adt.getAllRealtimeMetrics'))
+  async getAllRealtimeMetrics(
+    @Payload()
+    data: {
+      workday?: string;
+      from?: string;
+      to?: string;
+      name?: string;
+      job_position?: string;
+      country?: string;
+      client_id?: string;
+      team_id?: string;
+      useCache?: boolean;
+    },
+  ) {
+    try {
+      const {
+        workday,
+        from,
+        to,
+        name,
+        job_position,
+        country,
+        client_id,
+        team_id,
+        useCache = true,
+      } = data;
+
+      const filters = {
+        name,
+        job_position,
+        country,
+        client_id,
+        team_id,
+      };
+
+      // Si se proporciona from y to, usar rango de fechas
+      if (from && to) {
+        const fromDate = new Date(from);
+        const toDate = new Date(to);
+        return await this.realtimeMetricsService.getAllRealtimeMetricsByDateRange(
+          fromDate,
+          toDate,
+          useCache,
+          filters,
+        );
+      }
+
+      // Si solo se proporciona workday o ninguno, usar comportamiento original
+      const workdayDate = workday ? new Date(workday) : undefined;
+      return await this.realtimeMetricsService.getAllRealtimeMetrics(
+        workdayDate,
+        useCache,
+        filters,
+      );
+    } catch (error) {
+      logError(this.logger, 'Error in getAllRealtimeMetrics', error);
       throw error;
     }
   }
