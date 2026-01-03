@@ -95,12 +95,6 @@ export class AdtListener {
       useCache?: boolean;
     },
   ) {
-    const pattern = getMessagePattern('adt.getRealtimeMetrics');
-    this.logger.log(`📥 Mensaje recibido en ADT_MS: ${pattern}`);
-    this.logger.debug(`📦 Payload recibido: ${JSON.stringify(data)}`);
-    console.log(`[ADT_MS] 📥 Mensaje recibido: ${pattern}`);
-    console.log(`[ADT_MS] 📦 Payload:`, data);
-
     try {
       const { contractorId, workday, from, to, useCache = true } = data;
 
@@ -332,6 +326,7 @@ export class AdtListener {
 
   /**
    * Obtiene uso de aplicaciones de un contractor.
+   * Consulta directamente desde events_raw para obtener datos de AppUsage.
    */
   @MessagePattern(getMessagePattern('adt.getAppUsage'))
   async getAppUsage(
@@ -349,26 +344,29 @@ export class AdtListener {
       let where = `contractor_id = '${contractorId}'`;
       if (from) {
         const fromDay = (from.includes('T') ? from.split('T')[0] : from).trim();
-        where += ` AND workday >= toDate('${fromDay}')`;
+        where += ` AND toDate(timestamp) >= toDate('${fromDay}')`;
       }
       if (to) {
         const toDay = (to.includes('T') ? to.split('T')[0] : to).trim();
-        where += ` AND workday <= toDate('${toDay}')`;
+        where += ` AND toDate(timestamp) <= toDate('${toDay}')`;
       }
       // Fallback para compatibilidad: si no hay from/to pero sí days, usar days
       if (!from && !to && typeof days === 'number' && Number.isFinite(days)) {
-        where += ` AND workday >= today() - ${days}`;
+        where += ` AND toDate(timestamp) >= today() - ${days}`;
       }
 
+      // Consulta directa desde events_raw - agrupa por día y app
       const query = `
         SELECT 
           contractor_id,
           app_name,
-          workday,
-          active_beats,
-          created_at
-        FROM app_usage_summary FINAL
-        WHERE ${where}
+          toDate(timestamp) AS workday,
+          toUInt32(sum(JSONExtractFloat(payload, 'AppUsage', app_name)) / 15) AS active_beats,
+          max(timestamp) AS created_at
+        FROM events_raw
+        ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app_name
+        WHERE ${where} AND JSONHas(payload, 'AppUsage')
+        GROUP BY contractor_id, app_name, workday
         ORDER BY workday DESC, active_beats DESC
       `;
 
@@ -412,6 +410,82 @@ export class AdtListener {
       return await this.clickHouseService.query(query);
     } catch (error) {
       logError(this.logger, 'Error in getRanking', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Obtiene top 5 mejores rankings de productividad.
+   * @param period 'day' (día actual), 'week' (última semana), 'month' (mes actual)
+   */
+  @MessagePattern(getMessagePattern('adt.getTop5BestRanking'))
+  async getTop5BestRanking(
+    @Payload()
+    data: {
+      period?: 'day' | 'week' | 'month';
+      useCache?: boolean;
+    },
+  ) {
+    try {
+      const { period = 'day', useCache = true } = data;
+
+      return await this.realtimeMetricsService.getTop5BestRanking(
+        period,
+        useCache,
+      );
+    } catch (error) {
+      logError(this.logger, 'Error in getTop5BestRanking', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Obtiene top 5 peores rankings de productividad.
+   * @param period 'day' (día actual), 'week' (última semana), 'month' (mes actual)
+   */
+  @MessagePattern(getMessagePattern('adt.getTop5WorstRanking'))
+  async getTop5WorstRanking(
+    @Payload()
+    data: {
+      period?: 'day' | 'week' | 'month';
+      useCache?: boolean;
+    },
+  ) {
+    try {
+      const { period = 'day', useCache = true } = data;
+
+      return await this.realtimeMetricsService.getTop5WorstRanking(
+        period,
+        useCache,
+      );
+    } catch (error) {
+      logError(this.logger, 'Error in getTop5WorstRanking', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Obtiene el porcentaje de talento activo vs inactivo en un período.
+   * Un contractor se considera "activo" si tiene métricas (beats) en el período.
+   * @param period 'day' (día actual), 'week' (última semana), 'month' (mes actual)
+   */
+  @MessagePattern(getMessagePattern('adt.getActiveTalentPercentage'))
+  async getActiveTalentPercentage(
+    @Payload()
+    data: {
+      period?: 'day' | 'week' | 'month';
+      useCache?: boolean;
+    },
+  ) {
+    try {
+      const { period = 'day', useCache = true } = data;
+
+      return await this.realtimeMetricsService.getActiveTalentPercentage(
+        period,
+        useCache,
+      );
+    } catch (error) {
+      logError(this.logger, 'Error in getActiveTalentPercentage', error);
       throw error;
     }
   }
@@ -515,56 +589,6 @@ export class AdtListener {
       };
     } catch (error) {
       logError(this.logger, 'Error in processSessionSummaries', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Ejecuta ETL para procesar uso de aplicaciones.
-   */
-  @MessagePattern(getMessagePattern('adt.processAppUsage'))
-  async processAppUsage(@Payload() data: { from?: string; to?: string }) {
-    try {
-      const { from, to } = data;
-      const fromDate = from ? new Date(from) : undefined;
-      const toDate = to ? new Date(to) : undefined;
-
-      const count = await this.etlService.processEventsToAppUsage(
-        fromDate,
-        toDate,
-      );
-
-      return {
-        message: 'App usage processed successfully',
-        count,
-      };
-    } catch (error) {
-      logError(this.logger, 'Error in processAppUsage', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Ejecuta ETL FORCE para procesar uso de aplicaciones (DELETE + INSERT).
-   */
-  @MessagePattern(getMessagePattern('adt.processAppUsageForce'))
-  async processAppUsageForce(@Payload() data: { from?: string; to?: string }) {
-    try {
-      const { from, to } = data;
-      const fromDate = from ? new Date(from) : undefined;
-      const toDate = to ? new Date(to) : undefined;
-
-      const count = await this.etlService.processEventsToAppUsageForce(
-        fromDate,
-        toDate,
-      );
-
-      return {
-        message: 'App usage processed (force) successfully',
-        count,
-      };
-    } catch (error) {
-      logError(this.logger, 'Error in processAppUsageForce', error);
       throw error;
     }
   }

@@ -34,11 +34,14 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
       await this.ensureDatabase(tempClient);
 
       // Ahora crear el cliente principal con la base de datos
+      // Configurar timeouts más largos para queries complejas
       this.client = createClient({
         host: `http://${envs.clickhouse.host}:${envs.clickhouse.port}`,
         username: envs.clickhouse.username,
         password: envs.clickhouse.password,
         database: envs.clickhouse.database,
+        request_timeout: 300000, // 5 minutos para queries complejas
+        max_open_connections: 10, // Limitar conexiones simultáneas
       });
 
       // Probar conexión con la base de datos
@@ -66,7 +69,6 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
       this.verifiedTables.add('contractor_activity_15s');
       this.verifiedTables.add('contractor_daily_metrics');
       this.verifiedTables.add('session_summary');
-      this.verifiedTables.add('app_usage_summary');
 
       // Cerrar cliente temporal
       await tempClient.close();
@@ -95,18 +97,64 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Ejecutar una consulta y retornar resultados
+   * Con timeout y mejor manejo de errores
    */
-  async query<T = unknown>(query: string): Promise<T[]> {
+  async query<T = unknown>(
+    query: string,
+    timeoutMs: number = 300000,
+  ): Promise<T[]> {
+    const startTime = Date.now();
     try {
-      const result = await this.client.query({
-        query,
-        format: 'JSONEachRow',
+      // Crear un timeout manual para queries muy largas
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => {
+          reject(new Error(`Query timeout after ${timeoutMs}ms`));
+        }, timeoutMs);
       });
 
-      const data = await result.json<T[]>();
+      const queryPromise = this.client
+        .query({
+          query,
+          format: 'JSONEachRow',
+        })
+        .then(async (result) => {
+          const data = await result.json<T[]>();
+          return data;
+        });
+
+      const data = await Promise.race([queryPromise, timeoutPromise]);
+      const duration = Date.now() - startTime;
+
+      if (duration > 5000) {
+        // Log queries que tardan más de 5 segundos
+        this.logger.warn(
+          `Slow query detected (${duration}ms): ${query.substring(0, 200)}...`,
+        );
+      }
+
       return data;
     } catch (error) {
-      this.logger.error(`Query failed: ${query}`, error);
+      const duration = Date.now() - startTime;
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+
+      // Log más detallado para errores de conexión
+      if (
+        errorMessage.includes('socket hang up') ||
+        errorMessage.includes('ECONNRESET') ||
+        errorMessage.includes('timeout')
+      ) {
+        this.logger.error(
+          `Connection error after ${duration}ms. Query: ${query.substring(0, 200)}...`,
+        );
+        this.logger.error(`Error: ${errorMessage}`);
+      } else {
+        this.logger.error(
+          `Query failed after ${duration}ms: ${query.substring(0, 200)}...`,
+          error,
+        );
+      }
+
       throw error;
     }
   }
@@ -492,6 +540,7 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
           country Nullable(String),
           client_id String,
           team_id Nullable(String),
+          isActive UInt8 DEFAULT 1,
           created_at DateTime,
           updated_at DateTime
         ) ENGINE = ReplacingMergeTree(updated_at)
@@ -574,6 +623,7 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
         CREATE TABLE IF NOT EXISTS ${dbName}.clients_dimension (
           client_id String,
           client_name String,
+          isActive UInt8 DEFAULT 1,
           created_at DateTime DEFAULT now(),
           updated_at DateTime DEFAULT now()
         ) ENGINE = ReplacingMergeTree(updated_at)
@@ -651,6 +701,8 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
           total_session_time_seconds UInt64,
           effective_work_seconds UInt64,
           productivity_score Float64,
+          app_usage Map(String, UInt64) DEFAULT map(),
+          browser_usage Map(String, UInt64) DEFAULT map(),
           created_at DateTime DEFAULT now()
         ) ENGINE = ReplacingMergeTree(created_at)
         PARTITION BY workday
@@ -658,6 +710,26 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
         TTL workday + INTERVAL 730 DAY
       `);
       this.logger.log('✅ Table contractor_daily_metrics verified/created');
+
+      // Migración: agregar columnas app_usage y browser_usage si no existen (para tablas existentes)
+      try {
+        await this.command(`
+          ALTER TABLE ${dbName}.contractor_daily_metrics 
+          ADD COLUMN IF NOT EXISTS app_usage Map(String, UInt64) DEFAULT map()
+        `);
+        await this.command(`
+          ALTER TABLE ${dbName}.contractor_daily_metrics 
+          ADD COLUMN IF NOT EXISTS browser_usage Map(String, UInt64) DEFAULT map()
+        `);
+        this.logger.log(
+          '✅ Columns app_usage and browser_usage verified/added',
+        );
+      } catch {
+        // Ignorar si las columnas ya existen
+        this.logger.debug(
+          'Columns app_usage/browser_usage already exist or migration skipped',
+        );
+      }
 
       // Crear tabla session_summary
       // Resumen por sesión con productivity_score
@@ -679,21 +751,8 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
       `);
       this.logger.log('✅ Table session_summary verified/created');
 
-      // Crear tabla app_usage_summary
-      // Uso de aplicaciones por contractor y día
-      await this.command(`
-        CREATE TABLE IF NOT EXISTS ${dbName}.app_usage_summary (
-          contractor_id String,
-          app_name String,
-          workday Date,
-          active_beats UInt32,
-          created_at DateTime DEFAULT now()
-        ) ENGINE = SummingMergeTree()
-        PARTITION BY workday
-        ORDER BY (contractor_id, app_name, workday)
-        TTL workday + INTERVAL 365 DAY
-      `);
-      this.logger.log('✅ Table app_usage_summary verified/created');
+      // ✅ OPTIMIZACIÓN: Crear índices secundarios para queries frecuentes
+      await this.createPerformanceIndexes(dbName);
 
       this.logger.log('✅ All ADT tables are ready');
     } catch (error) {
@@ -713,6 +772,92 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
         });
       }
       this.logger.warn('⚠️ ADT tables could not be created automatically.');
+    }
+  }
+
+  /**
+   * Crea índices secundarios para optimizar queries frecuentes.
+   * Los skip indexes en ClickHouse reducen la cantidad de datos escaneados.
+   */
+  private async createPerformanceIndexes(dbName: string): Promise<void> {
+    try {
+      // Índice para events_raw: filtra por contractor_id y timestamp
+      // minmax: bueno para rangos de fechas
+      try {
+        await this.command(`
+          ALTER TABLE ${dbName}.events_raw
+          ADD INDEX IF NOT EXISTS idx_contractor_timestamp (contractor_id, timestamp)
+          TYPE minmax GRANULARITY 4
+        `);
+        this.logger.debug(
+          '✅ Index idx_contractor_timestamp on events_raw verified/created',
+        );
+      } catch {
+        this.logger.debug('Index idx_contractor_timestamp may already exist');
+      }
+
+      // Índice bloom_filter para búsquedas exactas en contractor_id
+      try {
+        await this.command(`
+          ALTER TABLE ${dbName}.events_raw
+          ADD INDEX IF NOT EXISTS idx_contractor_bf (contractor_id)
+          TYPE bloom_filter(0.01) GRANULARITY 1
+        `);
+        this.logger.debug(
+          '✅ Index idx_contractor_bf on events_raw verified/created',
+        );
+      } catch {
+        this.logger.debug('Index idx_contractor_bf may already exist');
+      }
+
+      // Índice para contractor_activity_15s
+      try {
+        await this.command(`
+          ALTER TABLE ${dbName}.contractor_activity_15s
+          ADD INDEX IF NOT EXISTS idx_activity_contractor (contractor_id)
+          TYPE bloom_filter(0.01) GRANULARITY 1
+        `);
+        this.logger.debug(
+          '✅ Index idx_activity_contractor on contractor_activity_15s verified/created',
+        );
+      } catch {
+        this.logger.debug('Index idx_activity_contractor may already exist');
+      }
+
+      // Índice para contractor_daily_metrics
+      try {
+        await this.command(`
+          ALTER TABLE ${dbName}.contractor_daily_metrics
+          ADD INDEX IF NOT EXISTS idx_daily_contractor (contractor_id)
+          TYPE bloom_filter(0.01) GRANULARITY 1
+        `);
+        this.logger.debug(
+          '✅ Index idx_daily_contractor on contractor_daily_metrics verified/created',
+        );
+      } catch {
+        this.logger.debug('Index idx_daily_contractor may already exist');
+      }
+
+      // Índice para workday en contractor_daily_metrics (útil para rangos)
+      try {
+        await this.command(`
+          ALTER TABLE ${dbName}.contractor_daily_metrics
+          ADD INDEX IF NOT EXISTS idx_daily_workday (workday)
+          TYPE minmax GRANULARITY 1
+        `);
+        this.logger.debug(
+          '✅ Index idx_daily_workday on contractor_daily_metrics verified/created',
+        );
+      } catch {
+        this.logger.debug('Index idx_daily_workday may already exist');
+      }
+
+      this.logger.log('✅ Performance indexes verified/created');
+    } catch (error) {
+      this.logger.warn(
+        `⚠️ Could not create some performance indexes: ${error}`,
+      );
+      // No lanzar error, los índices son opcionales
     }
   }
 }

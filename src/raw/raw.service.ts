@@ -29,7 +29,6 @@ export class RawService {
         .split('T')[0];
 
       let beforeBeats = 0;
-      let beforeApps = 0;
 
       if (enableMvLogs && contractorId) {
         try {
@@ -39,13 +38,6 @@ export class RawService {
             WHERE contractor_id = '${contractorId}' AND workday = toDate('${workdayStr}')
           `);
           beforeBeats = Number(b1[0]?.cnt || 0);
-
-          const b2 = await this.clickHouseService.query<{ cnt: number }>(`
-            SELECT count() AS cnt
-            FROM app_usage_summary
-            WHERE contractor_id = '${contractorId}' AND workday = toDate('${workdayStr}')
-          `);
-          beforeApps = Number(b2[0]?.cnt || 0);
         } catch {}
       }
 
@@ -81,20 +73,11 @@ export class RawService {
           `);
           const afterBeats = Number(a1[0]?.cnt || 0);
 
-          const a2 = await this.clickHouseService.query<{ cnt: number }>(`
-            SELECT count() AS cnt
-            FROM app_usage_summary
-            WHERE contractor_id = '${contractorId}' AND workday = toDate('${workdayStr}')
-          `);
-          const afterApps = Number(a2[0]?.cnt || 0);
-
           const dBeats = afterBeats - beforeBeats;
-          const dApps = afterApps - beforeApps;
 
           this.logger.log(
             `🧪 MV check for contractor ${contractorId} on ${workdayStr} → ` +
-              `activity_15s: ${beforeBeats.toLocaleString('en-US')} → ${afterBeats.toLocaleString('en-US')} (Δ ${dBeats}), ` +
-              `app_usage_summary: ${beforeApps.toLocaleString('en-US')} → ${afterApps.toLocaleString('en-US')} (Δ ${dApps})`,
+              `activity_15s: ${beforeBeats.toLocaleString('en-US')} → ${afterBeats.toLocaleString('en-US')} (Δ ${dBeats})`,
           );
         } catch (err) {
           this.logger.debug(`MV check skipped: ${(err as Error).message}`);
@@ -175,6 +158,7 @@ export class RawService {
         country: contractor.country || null,
         client_id: contractor.client_id,
         team_id: contractor.team_id || null,
+        isActive: contractor.isActive ? 1 : 0,
         created_at: contractor.created_at,
         updated_at: contractor.updated_at,
       });
@@ -214,11 +198,16 @@ export class RawService {
    * Guardar o actualizar client en la tabla clients_dimension
    * Usa el motor ReplacingMergeTree, por lo que las actualizaciones son manejadas por ClickHouse
    */
-  async saveClient(clientId: string, clientName: string): Promise<void> {
+  async saveClient(
+    clientId: string,
+    clientName: string,
+    isActive: boolean = true,
+  ): Promise<void> {
     try {
       await this.clickHouseService.insert('clients_dimension', {
         client_id: clientId,
         client_name: clientName,
+        isActive: isActive ? 1 : 0,
         created_at: new Date(),
         updated_at: new Date(),
       });

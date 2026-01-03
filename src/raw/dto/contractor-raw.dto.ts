@@ -8,7 +8,7 @@ export class ContractorRawDto {
   country: string | null;
   client_id: string;
   team_id: string | null;
+  isActive: boolean;
   created_at: Date;
   updated_at: Date;
 }
-

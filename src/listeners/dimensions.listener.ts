@@ -74,7 +74,11 @@ export class DimensionsListener {
         return;
       }
 
-      await this.rawService.saveClient(client.id, client.name);
+      await this.rawService.saveClient(
+        client.id,
+        client.name,
+        client.isActive !== undefined ? client.isActive : true,
+      );
       this.logger.debug(
         `✅ Client saved to dimensions: ${client.id} - ${client.name}`,
       );

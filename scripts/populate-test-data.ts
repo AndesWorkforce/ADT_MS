@@ -2,17 +2,18 @@
  * Script para poblar ClickHouse con datos de prueba
  *
  * Genera:
- * - 10 contratistas
- * - 5 días de datos (anteriores a hoy)
+ * - 30 contratistas
+ * - 2 meses de datos (desde 2 meses atrás hasta hoy)
  * - ~8 horas de trabajo por día por contratista
  * - Eventos distribuidos en sesiones a lo largo del día
- * - 3 muy productivos (80-90%)
- * - 3 medianamente productivos (60-75%)
- * - 4 poco productivos (30-50%)
+ * - 10 muy productivos (80-90%)
+ * - 10 medianamente productivos (60-75%)
+ * - 10 poco productivos (30-50%)
  */
 
 import 'dotenv/config';
 import { createClient } from '@clickhouse/client';
+import { Client as PgClient } from 'pg';
 import * as crypto from 'crypto';
 
 // Configuración desde variables de entorno
@@ -27,9 +28,10 @@ const WORK_HOURS_MIN = 6; // Horas mínimas de trabajo por día
 const WORK_HOURS_MAX = 8; // Horas máximas de trabajo por día
 const BEAT_INTERVAL_SECONDS = 15; // Cada heartbeat es de 15 segundos
 
-// Fechas de inicio y fin para generar datos
-const START_DATE = new Date('2025-11-20T00:00:00.000Z');
-const END_DATE = new Date('2025-12-05T00:00:00.000Z');
+// Fechas de inicio y fin para generar datos (2 meses atrás hasta hoy)
+const END_DATE = new Date(); // Hoy
+const START_DATE = new Date(END_DATE);
+START_DATE.setMonth(START_DATE.getMonth() - 2); // 2 meses atrás
 
 const PRODUCTIVE_APPS = ['Code', 'Notion'];
 const NEUTRAL_APPS = ['Chrome', 'Edge', 'Slack', 'Teams'];
@@ -84,6 +86,16 @@ function generateName(index: number): string {
     'Sofia',
     'Diego',
     'Valentina',
+    'Andres',
+    'Camila',
+    'Fernando',
+    'Isabella',
+    'Roberto',
+    'Gabriela',
+    'Miguel',
+    'Daniela',
+    'Javier',
+    'Natalia',
   ];
   const lastNames = [
     'Garcia',
@@ -96,6 +108,16 @@ function generateName(index: number): string {
     'Ramirez',
     'Torres',
     'Flores',
+    'Rivera',
+    'Cruz',
+    'Morales',
+    'Ortiz',
+    'Gutierrez',
+    'Chavez',
+    'Ramos',
+    'Mendoza',
+    'Herrera',
+    'Jimenez',
   ];
   return `${firstNames[index % firstNames.length]} ${lastNames[Math.floor(index / firstNames.length) % lastNames.length]}`;
 }
@@ -130,6 +152,42 @@ function calculateBeatsForWorkDay(workHours: number): number {
 // Generar horas de trabajo aleatorias entre min y max
 function generateWorkHours(): number {
   return WORK_HOURS_MIN + Math.random() * (WORK_HOURS_MAX - WORK_HOURS_MIN);
+}
+
+// Generar factor de variación diaria de productividad
+// Devuelve un factor entre 0.65 y 1.35 que varía la productividad del día
+// Esto permite que un contratista tenga días mejores y peores
+function generateDailyProductivityFactor(
+  baseProductivity: ProductivityLevel,
+): number {
+  // Factor base según el nivel de productividad
+  // High: 0.85-1.15 (días buenos más frecuentes)
+  // Medium: 0.75-1.25 (más variación)
+  // Low: 0.65-1.35 (más variación, días muy malos posibles)
+  let minFactor: number;
+  let maxFactor: number;
+
+  switch (baseProductivity) {
+    case 'high':
+      minFactor = 0.85;
+      maxFactor = 1.15;
+      break;
+    case 'medium':
+      minFactor = 0.75;
+      maxFactor = 1.25;
+      break;
+    case 'low':
+      minFactor = 0.65;
+      maxFactor = 1.35;
+      break;
+  }
+
+  // Aplicar distribución normal aproximada (usando suma de 3 random para aproximar curva normal)
+  const randomSum = Math.random() + Math.random() + Math.random();
+  const normalized = randomSum / 3; // 0-1
+  const factor = minFactor + normalized * (maxFactor - minFactor);
+
+  return Math.max(0.5, Math.min(1.5, factor)); // Limitar entre 0.5 y 1.5 para evitar extremos
 }
 
 // Generar sesiones distribuidas a lo largo del día
@@ -191,16 +249,22 @@ function generatePayload(
   productivity: ProductivityLevel,
   beatIndex: number,
   sessionBeats: number,
+  dailyFactor: number = 1.0, // Factor de variación diaria (default 1.0 = sin variación)
 ): string {
   // Progreso dentro de la sesión (0..1) y factor suave para variar la intensidad a lo largo de la sesión
   const progress = sessionBeats > 0 ? beatIndex / sessionBeats : 0;
   const phaseFactor = 0.9 + 0.2 * progress; // 0.9 → 1.1
 
-  // Probabilidad de beat idle (sin inputs) por nivel de productividad
-  // Alta: micro pausas bajas; Media: pausas moderadas; Baja: pausas frecuentes
-  const idleProb =
+  // Ajustar probabilidad de beat idle según el factor diario
+  // Si dailyFactor < 1.0 (día malo), aumenta la probabilidad de beats idle
+  // Si dailyFactor > 1.0 (día bueno), disminuye la probabilidad de beats idle
+  const baseIdleProb =
     productivity === 'high' ? 0.12 : productivity === 'medium' ? 0.28 : 0.45;
-  const isIdleBeat = Math.random() < idleProb;
+  const adjustedIdleProb = Math.max(
+    0.05,
+    Math.min(0.7, baseIdleProb * (2 - dailyFactor)),
+  ); // Invertir: factor alto = menos idle
+  const isIdleBeat = Math.random() < adjustedIdleProb;
 
   let keyboardInputs: number;
   let mouseClicks: number;
@@ -219,40 +283,64 @@ function generatePayload(
     browserUsage = {};
   } else {
     // Calcular valores según productividad (beat activo)
+    // Aplicar el factor diario para variar la productividad del día
     switch (productivity) {
       case 'high': // 80-90%
-        // Rango más realista por beat de 15s
-        keyboardInputs = 6 + Math.floor(Math.random() * 13); // 6-18 inputs
-        mouseClicks = 2 + Math.floor(Math.random() * 5); // 2-6 clicks
-        idleTime = Math.random() * 0.6; // 0-0.6 segundos idle
-        // Más tiempo en apps productivas
-        appUsage = generateAppUsage(true, false);
-        browserUsage = generateBrowserUsage(true, false);
+        // Rango más realista por beat de 15s, ajustado por factor diario
+        keyboardInputs = Math.round(
+          (6 + Math.floor(Math.random() * 13)) * dailyFactor,
+        ); // 6-18 inputs * factor
+        mouseClicks = Math.round(
+          (2 + Math.floor(Math.random() * 5)) * dailyFactor,
+        ); // 2-6 clicks * factor
+        idleTime = Math.max(0, (Math.random() * 0.6) / dailyFactor); // Menos idle si factor alto
+        // Más tiempo en apps productivas (ajustado por factor diario)
+        const highProductive = dailyFactor >= 0.95;
+        const highNonProductive = dailyFactor < 0.85;
+        appUsage = generateAppUsage(highProductive, highNonProductive);
+        browserUsage = generateBrowserUsage(highProductive, highNonProductive);
         break;
 
       case 'medium': // 60-75%
-        keyboardInputs = 3 + Math.floor(Math.random() * 8); // 3-10 inputs
-        mouseClicks = 1 + Math.floor(Math.random() * 4); // 1-4 clicks
-        idleTime = 1.0 + Math.random() * 3.0; // 1.0-4.0 segundos idle
-        // Mix de apps
-        appUsage = generateAppUsage(false, false);
-        browserUsage = generateBrowserUsage(false, false);
+        keyboardInputs = Math.round(
+          (3 + Math.floor(Math.random() * 8)) * dailyFactor,
+        ); // 3-10 inputs * factor
+        mouseClicks = Math.round(
+          (1 + Math.floor(Math.random() * 4)) * dailyFactor,
+        ); // 1-4 clicks * factor
+        idleTime = Math.max(0, (1.0 + Math.random() * 3.0) / dailyFactor); // Menos idle si factor alto
+        // Mix de apps (ajustado por factor diario)
+        const medProductive = dailyFactor >= 1.0;
+        const medNonProductive = dailyFactor < 0.85;
+        appUsage = generateAppUsage(medProductive, medNonProductive);
+        browserUsage = generateBrowserUsage(medProductive, medNonProductive);
         break;
 
       case 'low': // 30-50%
-        keyboardInputs =
-          Math.random() < 0.6 ? 0 : 1 + Math.floor(Math.random() * 3); // 0-3 inputs
-        mouseClicks =
-          Math.random() < 0.7 ? 0 : 1 + Math.floor(Math.random() * 2); // 0-2 clicks
-        idleTime = 4 + Math.random() * 8; // 4-12 segundos idle
-        // Más tiempo en apps no productivas
-        appUsage = generateAppUsage(false, true);
-        browserUsage = generateBrowserUsage(false, true);
+        // En días malos (factor bajo), más probabilidad de 0 inputs
+        const lowInputProb = dailyFactor < 0.8 ? 0.7 : 0.6;
+        keyboardInputs = Math.round(
+          (Math.random() < lowInputProb
+            ? 0
+            : 1 + Math.floor(Math.random() * 3)) * dailyFactor,
+        ); // 0-3 inputs * factor
+        const lowClickProb = dailyFactor < 0.8 ? 0.8 : 0.7;
+        mouseClicks = Math.round(
+          (Math.random() < lowClickProb
+            ? 0
+            : 1 + Math.floor(Math.random() * 2)) * dailyFactor,
+        ); // 0-2 clicks * factor
+        idleTime = Math.max(0, (4 + Math.random() * 8) / dailyFactor); // Más idle si factor bajo
+        // Más tiempo en apps no productivas (ajustado por factor diario)
+        const lowProductive = dailyFactor >= 1.0;
+        const lowNonProductive = dailyFactor < 0.9;
+        appUsage = generateAppUsage(lowProductive, lowNonProductive);
+        browserUsage = generateBrowserUsage(lowProductive, lowNonProductive);
         break;
     }
   }
 
-  // Variación suave por fase de sesión
+  // Variación suave por fase de sesión (ya aplicado el factor diario)
   keyboardInputs = Math.max(0, Math.round(keyboardInputs * phaseFactor));
   mouseClicks = Math.max(0, Math.round(mouseClicks * phaseFactor));
 
@@ -464,12 +552,12 @@ function generateBrowserUsage(
   return usage;
 }
 
-// Generar contratistas
+// Generar contratistas (30 total)
 function generateContractors(): ContractorConfig[] {
   const contractors: ContractorConfig[] = [];
 
-  // 3 muy productivos (80-90%)
-  for (let i = 0; i < 3; i++) {
+  // 10 muy productivos (80-90%)
+  for (let i = 0; i < 10; i++) {
     contractors.push({
       contractor_id: generateId('contractor'),
       name: generateName(i),
@@ -479,8 +567,8 @@ function generateContractors(): ContractorConfig[] {
     });
   }
 
-  // 3 medianamente productivos (60-75%)
-  for (let i = 3; i < 6; i++) {
+  // 10 medianamente productivos (60-75%)
+  for (let i = 10; i < 20; i++) {
     contractors.push({
       contractor_id: generateId('contractor'),
       name: generateName(i),
@@ -490,8 +578,8 @@ function generateContractors(): ContractorConfig[] {
     });
   }
 
-  // 4 poco productivos (30-50%)
-  for (let i = 6; i < 10; i++) {
+  // 10 poco productivos (30-50%)
+  for (let i = 20; i < 30; i++) {
     contractors.push({
       contractor_id: generateId('contractor'),
       name: generateName(i),
@@ -502,6 +590,98 @@ function generateContractors(): ContractorConfig[] {
   }
 
   return contractors;
+}
+
+// Insertar clients y contractors en PostgreSQL (USER_MS)
+async function seedPostgres(
+  contractors: ContractorConfig[],
+  clientNames: string[],
+) {
+  const databaseUrl = process.env.DATABASE_URL;
+
+  if (!databaseUrl) {
+    console.warn(
+      '⚠️  DATABASE_URL no está definido. Se omite seed en PostgreSQL.',
+    );
+    return;
+  }
+
+  const pg = new PgClient({ connectionString: databaseUrl });
+  await pg.connect();
+
+  try {
+    console.log(
+      '🐘 Conectando a PostgreSQL para seed de clients/contractors...',
+    );
+
+    // Asegurar que existan clients
+    const existingClients = await pg.query<{ id: string; name: string }>(
+      'SELECT id, name FROM clients',
+    );
+
+    const clientsForPostgres = existingClients.rows;
+
+    if (clientsForPostgres.length === 0) {
+      console.log(
+        '📂 No se encontraron clients en PostgreSQL. Creando nuevos...',
+      );
+      const insertClientText =
+        'INSERT INTO clients (name, created_at, updated_at) VALUES ($1, NOW(), NOW()) RETURNING id, name';
+
+      for (const name of clientNames) {
+        const result = await pg.query(insertClientText, [name]);
+        clientsForPostgres.push(result.rows[0]);
+      }
+    } else {
+      console.log(
+        `📂 Se encontraron ${clientsForPostgres.length} clients existentes en PostgreSQL. Se reutilizarán.`,
+      );
+    }
+
+    // Insertar contractors (si no existen por email)
+    console.log('👥 Insertando contractors en PostgreSQL (si no existen)...');
+
+    const insertContractorText = `
+      INSERT INTO contractors (
+        id,
+        name,
+        email,
+        job_position,
+        client_id,
+        country,
+        work_schedule_start,
+        work_schedule_end,
+        created_at,
+        updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
+      ON CONFLICT (email) DO NOTHING
+    `;
+
+    for (const contractor of contractors) {
+      const randomClient =
+        clientsForPostgres[
+          Math.floor(Math.random() * clientsForPostgres.length)
+        ];
+
+      await pg.query(insertContractorText, [
+        contractor.contractor_id,
+        contractor.name,
+        contractor.email,
+        'Software Developer',
+        randomClient.id,
+        'Argentina',
+        '09:00',
+        '18:00',
+      ]);
+    }
+
+    console.log('✅ Seed de clients y contractors en PostgreSQL completado.\n');
+  } catch (error) {
+    console.error('❌ Error haciendo seed en PostgreSQL:', error);
+  } finally {
+    await pg.end();
+  }
 }
 
 // Función principal
@@ -576,6 +756,12 @@ async function populateTestData() {
     { id: generateId('client'), name: 'Qilla' },
   ];
 
+  // Seed en PostgreSQL (USER_MS): clients + contractors (isActive por defecto true)
+  await seedPostgres(
+    contractors,
+    clients.map((c) => c.name),
+  );
+
   // Poblar tablas de dimensiones
   teams.forEach((team) => {
     teamsDimension.push({
@@ -590,19 +776,30 @@ async function populateTestData() {
     clientsDimension.push({
       client_id: client.id,
       client_name: client.name,
+      isActive: 1,
       created_at: formatDateForClickHouse(new Date()),
       updated_at: formatDateForClickHouse(new Date()),
     });
   });
 
-  // Generar datos para cada contratista
+  // Primero, generar información de todos los contratistas (sin eventos aún)
+  const contractorAgents = new Map<string, string>(); // contractor_id -> agent_id
+  const contractorTeams = new Map<
+    string,
+    { teamId: string; clientId: string }
+  >(); // contractor_id -> {teamId, clientId}
+
   for (const contractor of contractors) {
     const agentId = generateId('agent');
+    contractorAgents.set(contractor.contractor_id, agentId);
+
     // Asignar aleatoriamente un team y client del conjunto fijo
     const team = teams[Math.floor(Math.random() * teams.length)];
     const client = clients[Math.floor(Math.random() * clients.length)];
-    const clientId = client.id;
-    const teamId = team.id;
+    contractorTeams.set(contractor.contractor_id, {
+      teamId: team.id,
+      clientId: client.id,
+    });
 
     // Información del contratista
     const contractorCreatedAt = new Date(dates[0]);
@@ -614,18 +811,61 @@ async function populateTestData() {
       work_schedule_start: '09:00',
       work_schedule_end: '18:00',
       country: 'Argentina',
-      client_id: clientId,
-      team_id: teamId,
+      client_id: client.id,
+      team_id: team.id,
+      isActive: 1,
       created_at: formatDateForClickHouse(contractorCreatedAt),
       updated_at: formatDateForClickHouse(contractorCreatedAt),
     });
+  }
 
-    let contractorEventsCount = 0;
+  // Contador de eventos por contratista para logging
+  const contractorEventsCount = new Map<string, number>();
+  contractors.forEach((c) => contractorEventsCount.set(c.contractor_id, 0));
 
-    // Generar datos para cada día
-    for (const day of dates) {
+  // Generar datos para cada día
+  for (const day of dates) {
+    // Seleccionar qué contratistas estarán activos este día (70-90% estarán activos)
+    const activePercentage = 0.7 + Math.random() * 0.2; // 70% - 90%
+    const numActive = Math.max(
+      1,
+      Math.floor(contractors.length * activePercentage),
+    );
+
+    // Mezclar contratistas y seleccionar los que estarán activos
+    const shuffled = [...contractors].sort(() => Math.random() - 0.5);
+    const activeContractors = shuffled.slice(0, numActive);
+    // inactiveContractors no se usa, solo para logging del slice
+    const _inactiveContractors = shuffled.slice(numActive);
+    void _inactiveContractors; // Evitar warning de variable no usada
+
+    console.log(
+      `📅 ${day.toISOString().split('T')[0]}: ${activeContractors.length}/${contractors.length} contratistas activos (${Math.round((activeContractors.length / contractors.length) * 100)}%)`,
+    );
+
+    // Generar eventos solo para contratistas activos
+    for (const contractor of activeContractors) {
+      const agentId = contractorAgents.get(contractor.contractor_id)!;
+      // teamId y clientId están disponibles si se necesitan en el futuro
+      const { teamId: _teamId, clientId: _clientId } = contractorTeams.get(
+        contractor.contractor_id,
+      )!;
+      void _teamId;
+      void _clientId;
+
+      // Generar factor de variación diaria de productividad
+      // Este factor varía cada día, haciendo que algunos días sean mejores o peores
+      const dailyProductivityFactor = generateDailyProductivityFactor(
+        contractor.productivity,
+      );
+
       // Generar horas de trabajo aleatorias para este día (entre 6 y 8 horas)
-      const workHours = generateWorkHours();
+      // En días con factor bajo, puede trabajar menos horas
+      const baseWorkHours = generateWorkHours();
+      const workHours = Math.max(
+        WORK_HOURS_MIN,
+        baseWorkHours * (0.8 + dailyProductivityFactor * 0.2),
+      ); // Ajustar horas según factor diario
       const beatsPerDay = calculateBeatsForWorkDay(workHours);
 
       const sessions = generateSessionsForDay(
@@ -647,6 +887,7 @@ async function populateTestData() {
             contractor.productivity,
             beatIndex,
             session.beats,
+            dailyProductivityFactor, // Pasar el factor diario
           );
 
           eventsRaw.push({
@@ -660,7 +901,9 @@ async function populateTestData() {
             created_at: formatDateForClickHouse(currentTimestamp),
           });
 
-          contractorEventsCount++;
+          const currentCount =
+            contractorEventsCount.get(contractor.contractor_id) || 0;
+          contractorEventsCount.set(contractor.contractor_id, currentCount + 1);
 
           // Avanzar 15 segundos
           currentTimestamp = new Date(
@@ -698,9 +941,13 @@ async function populateTestData() {
         });
       }
     }
+  }
 
+  // Log de eventos generados por contratista
+  for (const contractor of contractors) {
+    const count = contractorEventsCount.get(contractor.contractor_id) || 0;
     console.log(
-      `✅ ${contractor.name} (${contractor.productivity}): ${contractorEventsCount} eventos generados`,
+      `✅ ${contractor.name} (${contractor.productivity}): ${count} eventos generados`,
     );
   }
 

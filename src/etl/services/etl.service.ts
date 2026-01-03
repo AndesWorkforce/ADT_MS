@@ -10,7 +10,6 @@ import {
 import { ActivityToDailyMetricsTransformer } from '../transformers/activity-to-daily-metrics.transformer';
 import { ActivityToSessionSummaryTransformer } from '../transformers/activity-to-session-summary.transformer';
 import { EventsToActivityTransformer } from '../transformers/events-to-activity.transformer';
-import { EventsToAppUsageTransformer } from '../transformers/events-to-app-usage.transformer';
 
 /**
  * Servicio ETL que orquesta las transformaciones RAW → ADT.
@@ -23,7 +22,6 @@ export class EtlService {
   constructor(
     private readonly clickHouseService: ClickHouseService,
     private readonly eventsToActivityTransformer: EventsToActivityTransformer,
-    private readonly eventsToAppUsageTransformer: EventsToAppUsageTransformer,
     private readonly activityToDailyMetricsTransformer: ActivityToDailyMetricsTransformer,
     private readonly activityToSessionSummaryTransformer: ActivityToSessionSummaryTransformer,
   ) {}
@@ -141,214 +139,6 @@ export class EtlService {
   }
 
   /**
-   * Procesa eventos RAW y genera app_usage_summary.
-   * Lee desde events_raw y guarda en app_usage_summary.
-   */
-  async processEventsToAppUsage(
-    fromDate?: Date,
-    toDate?: Date,
-  ): Promise<number> {
-    try {
-      // Si no se proporciona rango, por defecto procesar el día anterior completo (idempotente y estable)
-      if (!fromDate && !toDate) {
-        const now = new Date();
-        const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-        // Inicio y fin del día de ayer en UTC
-        const startOfYesterday = new Date(
-          Date.UTC(
-            yesterday.getUTCFullYear(),
-            yesterday.getUTCMonth(),
-            yesterday.getUTCDate(),
-            0,
-            0,
-            0,
-          ),
-        );
-        const endOfYesterday = new Date(
-          Date.UTC(
-            yesterday.getUTCFullYear(),
-            yesterday.getUTCMonth(),
-            yesterday.getUTCDate(),
-            23,
-            59,
-            59,
-          ),
-        );
-        fromDate = startOfYesterday;
-        toDate = endOfYesterday;
-        this.logger.warn(
-          'processEventsToAppUsage called without range. Defaulting to YESTERDAY (UTC) to ensure idempotency and stable counts.',
-        );
-      }
-
-      // 1) Procesar por día únicamente si no existen registros para ese día
-      const start = new Date(fromDate as Date);
-      const end = new Date(toDate as Date);
-      start.setUTCHours(0, 0, 0, 0);
-      end.setUTCHours(0, 0, 0, 0);
-
-      let totalRows = 0;
-      for (
-        let d = new Date(start.getTime());
-        d.getTime() <= end.getTime();
-        d = new Date(d.getTime() + 24 * 60 * 60 * 1000)
-      ) {
-        const dayStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
-
-        const expectedRowsRes = await this.clickHouseService.query<{
-          cnt: number;
-        }>(`
-          SELECT count() AS cnt
-          FROM (
-            SELECT contractor_id, toDate(timestamp) AS workday, app_name
-            FROM events_raw
-            ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app_name
-            WHERE JSONHas(payload, 'AppUsage') AND toDate(timestamp) = toDate('${dayStr}')
-            GROUP BY contractor_id, workday, app_name
-          )
-        `);
-        const expectedRows = Number(expectedRowsRes[0]?.cnt || 0);
-
-        const insertQueryPerDay = `
-          INSERT INTO app_usage_summary
-          SELECT
-            contractor_id,
-            app_name,
-            toDate(timestamp) AS workday,
-            toUInt32(
-              greatest(
-                0,
-                round(
-                  sum(
-                    JSONExtractFloat(payload, 'AppUsage', app_name)
-                    + toFloat64OrZero(JSONExtractString(payload, 'AppUsage', app_name))
-                  ) / 15.0
-                )
-              )
-            ) AS active_beats,
-            now() AS created_at
-          FROM events_raw
-          ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app_name
-          WHERE JSONHas(payload, 'AppUsage') AND toDate(timestamp) = toDate('${dayStr}')
-          GROUP BY contractor_id, workday, app_name
-          HAVING (contractor_id, workday, app_name) NOT IN (
-            SELECT contractor_id, workday, app_name
-            FROM app_usage_summary
-            WHERE workday = toDate('${dayStr}')
-          )
-        `;
-        await this.clickHouseService.command(insertQueryPerDay);
-        totalRows += expectedRows;
-        this.logger.log(
-          `✅ Processed app_usage_summary for ${dayStr}. Rows: ${expectedRows === 0 ? '0' : expectedRows.toLocaleString('en-US')}`,
-        );
-      }
-
-      return Number(totalRows || 0);
-    } catch (error) {
-      this.logger.error(
-        `Error processing events to app usage: ${error.message}`,
-      );
-      throw error;
-    }
-  }
-
-  /**
-   * Fuerza el reprocesamiento de AppUsage (RAW → app_usage_summary).
-   * Borra los datos existentes del rango y vuelve a insertar (DELETE + INSERT).
-   */
-  async processEventsToAppUsageForce(
-    fromDate?: Date,
-    toDate?: Date,
-  ): Promise<number> {
-    try {
-      // Default: día actual si no se provee rango
-      if (!fromDate && !toDate) {
-        const d = new Date();
-        d.setUTCHours(0, 0, 0, 0);
-        fromDate = new Date(d);
-        toDate = new Date(d);
-        this.logger.warn(
-          'processEventsToAppUsageForce called without range. Defaulting to TODAY (UTC).',
-        );
-      }
-
-      const start = new Date(fromDate as Date);
-      const end = new Date(toDate as Date);
-      start.setUTCHours(0, 0, 0, 0);
-      end.setUTCHours(0, 0, 0, 0);
-
-      let totalRows = 0;
-      for (
-        let d = new Date(start.getTime());
-        d.getTime() <= end.getTime();
-        d = new Date(d.getTime() + 24 * 60 * 60 * 1000)
-      ) {
-        const dayStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
-
-        // 1) Borrar por partición/día
-        await this.clickHouseService.command(`
-          ALTER TABLE app_usage_summary DELETE
-          WHERE workday = toDate('${dayStr}')
-        `);
-
-        // 2) Insertar agregados del día
-        const expectedRowsRes = await this.clickHouseService.query<{
-          cnt: number;
-        }>(`
-          SELECT count() AS cnt
-          FROM (
-            SELECT contractor_id, toDate(timestamp) AS workday, app_name
-            FROM events_raw
-            ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app_name
-            WHERE JSONHas(payload, 'AppUsage') AND toDate(timestamp) = toDate('${dayStr}')
-            GROUP BY contractor_id, workday, app_name
-          )
-        `);
-        const expectedRows = Number(expectedRowsRes[0]?.cnt || 0);
-
-        const insertQueryPerDay = `
-          INSERT INTO app_usage_summary
-          SELECT
-            contractor_id,
-            app_name,
-            toDate(timestamp) AS workday,
-            toUInt32(
-              greatest(
-                0,
-                round(
-                  sum(
-                    JSONExtractFloat(payload, 'AppUsage', app_name)
-                    + toFloat64OrZero(JSONExtractString(payload, 'AppUsage', app_name))
-                  ) / 15.0
-                )
-              )
-            ) AS active_beats,
-            now() AS created_at
-          FROM events_raw
-          ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app_name
-          WHERE JSONHas(payload, 'AppUsage') AND toDate(timestamp) = toDate('${dayStr}')
-          GROUP BY contractor_id, workday, app_name
-        `;
-        await this.clickHouseService.command(insertQueryPerDay);
-
-        totalRows += expectedRows;
-        this.logger.log(
-          `✅ FORCE processed app_usage_summary for ${dayStr}. Rows: ${expectedRows === 0 ? '0' : expectedRows.toLocaleString('en-US')}`,
-        );
-      }
-
-      this.logger.log(
-        `✅ Total FORCE processed rows into app_usage_summary: ${totalRows === 0 ? '0' : totalRows.toLocaleString('en-US')}`,
-      );
-      return Number(totalRows || 0);
-    } catch (error) {
-      this.logger.error(`Error processing app usage (force): ${error.message}`);
-      throw error;
-    }
-  }
-
-  /**
    * Fuerza el reprocesamiento de eventos RAW → contractor_activity_15s.
    * Borra los datos existentes del rango y vuelve a insertar (DELETE + INSERT SELECT).
    */
@@ -445,6 +235,21 @@ export class EtlService {
     toDate?: Date,
   ): Promise<ContractorDailyMetricsDto[]> {
     try {
+      // Asegurar que las columnas app_usage y browser_usage existan (migración)
+      try {
+        await this.clickHouseService.command(`
+          ALTER TABLE contractor_daily_metrics 
+          ADD COLUMN IF NOT EXISTS app_usage Map(String, UInt64) DEFAULT map()
+        `);
+        await this.clickHouseService.command(`
+          ALTER TABLE contractor_daily_metrics 
+          ADD COLUMN IF NOT EXISTS browser_usage Map(String, UInt64) DEFAULT map()
+        `);
+        this.logger.log('✅ Columns app_usage and browser_usage verified');
+      } catch {
+        this.logger.debug('Migration skipped or columns already exist');
+      }
+
       // Construir lista de días a procesar
       const days: string[] = [];
       if (fromDate || toDate) {
@@ -499,6 +304,8 @@ export class EtlService {
               total_session_time_seconds,
               effective_work_seconds,
               productivity_score,
+              app_usage,
+              browser_usage,
               created_at
             FROM contractor_daily_metrics
             WHERE workday = toDate('${dayStr}')
@@ -508,9 +315,28 @@ export class EtlService {
           continue;
         }
 
-        // Insertar métricas diarias calculadas en SQL para ese día
+        // ✅ OPTIMIZACIÓN: Query simplificada en 2 pasos para evitar errores de memoria
+        // Paso 1: Insertar métricas básicas + productivity_score (SIN Maps complejos)
+        // Los JOINs para calcular weighted_seconds son ligeros, solo calculamos totales
         const insertQuery = `
-        INSERT INTO contractor_daily_metrics
+        INSERT INTO contractor_daily_metrics (
+          contractor_id,
+          workday,
+          total_beats,
+          active_beats,
+          idle_beats,
+          active_percentage,
+          total_keyboard_inputs,
+          total_mouse_clicks,
+          avg_keyboard_per_min,
+          avg_mouse_per_min,
+          total_session_time_seconds,
+          effective_work_seconds,
+          productivity_score,
+          app_usage,
+          browser_usage,
+          created_at
+        )
         SELECT
           a.contractor_id,
           a.workday,
@@ -536,8 +362,12 @@ export class EtlService {
               50.0
             )
           )) AS productivity_score,
+          -- Maps vacíos por defecto (se pueden poblar en un paso posterior si se necesitan)
+          map() AS app_usage,
+          map() AS browser_usage,
           now() AS created_at
         FROM contractor_activity_15s a
+        -- JOIN ligero para apps: solo calcula totales ponderados (sin crear Maps)
         LEFT JOIN (
           SELECT 
             contractor_id,
@@ -550,6 +380,7 @@ export class EtlService {
           WHERE toDate(timestamp) = toDate('${dayStr}')
           GROUP BY contractor_id, workday
         ) app ON app.contractor_id = a.contractor_id AND app.workday = a.workday
+        -- JOIN ligero para browser: solo calcula totales ponderados (sin crear Maps)
         LEFT JOIN (
           SELECT 
             contractor_id,
@@ -611,6 +442,8 @@ export class EtlService {
             total_session_time_seconds,
             effective_work_seconds,
             productivity_score,
+            app_usage,
+            browser_usage,
             created_at
           FROM contractor_daily_metrics
           WHERE workday = toDate('${dayStr}')

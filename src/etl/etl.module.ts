@@ -5,10 +5,10 @@ import { DimensionsInitService } from './services/dimensions-init.service';
 import { DimensionsService } from './services/dimensions.service';
 import { EtlService } from './services/etl.service';
 import { RealtimeMetricsService } from './services/realtime-metrics.service';
+import { UsageDataService } from './services/usage-data.service';
 import { ActivityToDailyMetricsTransformer } from './transformers/activity-to-daily-metrics.transformer';
 import { ActivityToSessionSummaryTransformer } from './transformers/activity-to-session-summary.transformer';
 import { EventsToActivityTransformer } from './transformers/events-to-activity.transformer';
-import { EventsToAppUsageTransformer } from './transformers/events-to-app-usage.transformer';
 
 @Module({
   imports: [ClickHouseModule],
@@ -18,9 +18,9 @@ import { EventsToAppUsageTransformer } from './transformers/events-to-app-usage.
     DimensionsInitService,
     EtlService,
     RealtimeMetricsService,
+    UsageDataService,
     // Transformers
     EventsToActivityTransformer,
-    EventsToAppUsageTransformer,
     ActivityToDailyMetricsTransformer,
     ActivityToSessionSummaryTransformer,
   ],
@@ -28,8 +28,8 @@ import { EventsToAppUsageTransformer } from './transformers/events-to-app-usage.
     DimensionsService,
     EtlService,
     RealtimeMetricsService,
+    UsageDataService,
     EventsToActivityTransformer,
-    EventsToAppUsageTransformer,
     ActivityToDailyMetricsTransformer,
     ActivityToSessionSummaryTransformer,
   ],

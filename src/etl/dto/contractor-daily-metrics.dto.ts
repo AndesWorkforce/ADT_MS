@@ -16,4 +16,10 @@ export class ContractorDailyMetricsDto {
   effective_work_seconds: number;
 
   productivity_score: number;
+
+  // Uso de aplicaciones: { "VSCode": 3600, "Chrome": 1200 } (segundos)
+  app_usage?: Record<string, number>;
+
+  // Uso de navegador por dominio: { "github.com": 1800, "stackoverflow.com": 900 } (segundos)
+  browser_usage?: Record<string, number>;
 }
