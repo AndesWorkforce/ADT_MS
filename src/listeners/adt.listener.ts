@@ -45,6 +45,8 @@ export class AdtListener {
           total_session_time_seconds,
           effective_work_seconds,
           productivity_score,
+          app_usage,
+          browser_usage,
           created_at
         FROM contractor_daily_metrics FINAL
         WHERE contractor_id = '${contractorId}'
@@ -63,15 +65,42 @@ export class AdtListener {
       }
 
       // Convertir workday de Date a string YYYY-MM-DD para consistencia
-      return results.map((row: any) => ({
-        ...row,
-        workday:
-          typeof row.workday === 'string'
-            ? row.workday.split('T')[0]
-            : row.workday instanceof Date
-              ? row.workday.toISOString().split('T')[0]
-              : row.workday,
-      }));
+      // Convertir app_usage y browser_usage de Map a Array
+      return results.map((row: any) => {
+        // Convertir app_usage Map a Array
+        let appUsage: Array<{ appName: string; seconds: number }> = [];
+        if (row.app_usage && typeof row.app_usage === 'object') {
+          appUsage = Object.entries(row.app_usage).map(
+            ([appName, seconds]) => ({
+              appName,
+              seconds: Number(seconds) || 0,
+            }),
+          );
+        }
+
+        // Convertir browser_usage Map a Array
+        let browserUsage: Array<{ domain: string; seconds: number }> = [];
+        if (row.browser_usage && typeof row.browser_usage === 'object') {
+          browserUsage = Object.entries(row.browser_usage).map(
+            ([domain, seconds]) => ({
+              domain,
+              seconds: Number(seconds) || 0,
+            }),
+          );
+        }
+
+        return {
+          ...row,
+          workday:
+            typeof row.workday === 'string'
+              ? row.workday.split('T')[0]
+              : row.workday instanceof Date
+                ? row.workday.toISOString().split('T')[0]
+                : row.workday,
+          app_usage: appUsage,
+          browser_usage: browserUsage,
+        };
+      });
     } catch (error) {
       logError(this.logger, 'Error in getDailyMetrics', error);
       throw error;
@@ -199,13 +228,33 @@ export class AdtListener {
 
   /**
    * Obtiene resúmenes de sesión de un contractor.
+   * Puede filtrar por rango de fechas (from/to) o por días hacia atrás (days).
    */
   @MessagePattern(getMessagePattern('adt.getSessionSummaries'))
   async getSessionSummaries(
-    @Payload() data: { contractorId: string; days: number },
+    @Payload()
+    data: {
+      contractorId: string;
+      from?: string;
+      to?: string;
+      days?: number;
+    },
   ) {
     try {
-      const { contractorId, days } = data;
+      const { contractorId, from, to, days = 30 } = data;
+
+      // Construir filtro de fecha
+      let dateFilter: string;
+      if (from && to) {
+        // Si se proporcionan from y to, usar rango de fechas
+        const fromDate = from.split('T')[0]; // Extraer solo YYYY-MM-DD
+        const toDate = to.split('T')[0];
+        dateFilter = `toDate(session_start) >= '${fromDate}' AND toDate(session_start) <= '${toDate}'`;
+      } else {
+        // Si no, usar days (por defecto 30)
+        dateFilter = `toDate(session_start) >= today() - ${days}`;
+      }
+
       const query = `
         SELECT 
           session_id,
@@ -219,7 +268,7 @@ export class AdtListener {
           created_at
         FROM session_summary
         WHERE contractor_id = '${contractorId}'
-          AND toDate(session_start) >= today() - ${days}
+          AND ${dateFilter}
         ORDER BY session_start DESC
       `;
 
