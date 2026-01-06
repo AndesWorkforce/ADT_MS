@@ -373,4 +373,150 @@ export class UsageDataService {
       return [];
     }
   }
+
+  /**
+   * Obtiene datos de AppUsage agregados para múltiples contractors en una sola query.
+   * Optimizado para evitar N+1 queries cuando se necesita app_usage de muchos contractors.
+   *
+   * @param contractorIds Array de IDs de contractors
+   * @param fromDate Fecha de inicio
+   * @param toDate Fecha de fin
+   * @returns Map con contractor_id como key y array de AppUsageData como value
+   */
+  async getAppUsageAggregatedForMultiple(
+    contractorIds: string[],
+    fromDate: Date,
+    toDate: Date,
+  ): Promise<Map<string, AppUsageData[]>> {
+    if (contractorIds.length === 0) {
+      return new Map();
+    }
+
+    const fromStr = fromDate.toISOString().split('T')[0];
+    const toStr = toDate.toISOString().split('T')[0];
+    const contractorIdsList = contractorIds.map((id) => `'${id}'`).join(',');
+
+    try {
+      const query = `
+        SELECT 
+          contractor_id,
+          app_name AS appName,
+          sum(JSONExtractFloat(payload, 'AppUsage', app_name)) AS seconds
+        FROM events_raw
+        ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app_name
+        WHERE contractor_id IN (${contractorIdsList})
+          AND toDate(timestamp) >= '${fromStr}'
+          AND toDate(timestamp) <= '${toStr}'
+          AND JSONHas(payload, 'AppUsage')
+        GROUP BY contractor_id, app_name
+        HAVING seconds > 0
+        ORDER BY contractor_id, seconds DESC
+      `;
+
+      const results = await this.clickHouseService.query<{
+        contractor_id: string;
+        appName: string;
+        seconds: number;
+      }>(query);
+
+      // Inicializar Map con arrays vacíos para todos los contractors
+      const usageMap = new Map<string, AppUsageData[]>();
+      contractorIds.forEach((id) => usageMap.set(id, []));
+
+      // Procesar resultados (ya vienen agrupados por contractor_id desde SQL)
+      // Un solo ciclo, sin verificaciones de has/get
+      results.forEach((row) => {
+        const existing = usageMap.get(row.contractor_id);
+        if (existing) {
+          existing.push({
+            appName: row.appName,
+            seconds: Number(row.seconds) || 0,
+          });
+        }
+      });
+
+      return usageMap;
+    } catch (error) {
+      this.logger.warn(
+        `Error getting aggregated AppUsage for multiple contractors: ${error.message}. Returning empty map.`,
+      );
+      // Retornar map vacío para todos los contractors
+      const emptyMap = new Map<string, AppUsageData[]>();
+      contractorIds.forEach((id) => emptyMap.set(id, []));
+      return emptyMap;
+    }
+  }
+
+  /**
+   * Obtiene datos de Browser agregados para múltiples contractors en una sola query.
+   * Optimizado para evitar N+1 queries cuando se necesita browser_usage de muchos contractors.
+   *
+   * @param contractorIds Array de IDs de contractors
+   * @param fromDate Fecha de inicio
+   * @param toDate Fecha de fin
+   * @returns Map con contractor_id como key y array de BrowserUsageData como value
+   */
+  async getBrowserUsageAggregatedForMultiple(
+    contractorIds: string[],
+    fromDate: Date,
+    toDate: Date,
+  ): Promise<Map<string, BrowserUsageData[]>> {
+    if (contractorIds.length === 0) {
+      return new Map();
+    }
+
+    const fromStr = fromDate.toISOString().split('T')[0];
+    const toStr = toDate.toISOString().split('T')[0];
+    const contractorIdsList = contractorIds.map((id) => `'${id}'`).join(',');
+
+    try {
+      const query = `
+        SELECT 
+          contractor_id,
+          domain,
+          sum(JSONExtractFloat(payload, 'browser', domain)) AS seconds
+        FROM events_raw
+        ARRAY JOIN JSONExtractKeys(payload, 'browser') AS domain
+        WHERE contractor_id IN (${contractorIdsList})
+          AND toDate(timestamp) >= '${fromStr}'
+          AND toDate(timestamp) <= '${toStr}'
+          AND JSONHas(payload, 'browser')
+        GROUP BY contractor_id, domain
+        HAVING seconds > 0
+        ORDER BY contractor_id, seconds DESC
+      `;
+
+      const results = await this.clickHouseService.query<{
+        contractor_id: string;
+        domain: string;
+        seconds: number;
+      }>(query);
+
+      // Inicializar Map con arrays vacíos para todos los contractors
+      const usageMap = new Map<string, BrowserUsageData[]>();
+      contractorIds.forEach((id) => usageMap.set(id, []));
+
+      // Procesar resultados (ya vienen agrupados por contractor_id desde SQL)
+      // Un solo ciclo, sin verificaciones de has/get
+      results.forEach((row) => {
+        const existing = usageMap.get(row.contractor_id);
+        if (existing) {
+          existing.push({
+            domain: row.domain,
+            seconds: Number(row.seconds) || 0,
+          });
+        }
+      });
+
+      return usageMap;
+    } catch (error) {
+      this.logger.warn(
+        `Error getting aggregated Browser usage for multiple contractors: ${error.message}. Returning empty map.`,
+      );
+      // Retornar map vacío para todos los contractors
+      const emptyMap = new Map<string, BrowserUsageData[]>();
+      contractorIds.forEach((id) => emptyMap.set(id, []));
+      return emptyMap;
+    }
+  }
 }

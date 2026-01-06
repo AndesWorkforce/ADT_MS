@@ -126,6 +126,8 @@ export class RealtimeMetricsService {
         total_session_time_seconds: 0,
         effective_work_seconds: 0,
         productivity_score: 0,
+        app_usage: [],
+        browser_usage: [],
         is_realtime: true,
       };
     }
@@ -505,25 +507,62 @@ export class RealtimeMetricsService {
       `📊 Fetched ${results.length} contractors from contractor_daily_metrics (${fromStr} to ${toStr})`,
     );
 
-    // Formatear resultados para mantener compatibilidad con el formato anterior
-    return results.map((row) => ({
-      contractor_id: row.contractor_id,
-      workday: row.workday,
-      total_beats: Number(row.total_beats) || 0,
-      active_beats: Number(row.active_beats) || 0,
-      idle_beats: Number(row.idle_beats) || 0,
-      active_percentage: Number(row.active_percentage) || 0,
-      total_keyboard_inputs: Number(row.total_keyboard_inputs) || 0,
-      total_mouse_clicks: Number(row.total_mouse_clicks) || 0,
-      avg_keyboard_per_min: Number(row.avg_keyboard_per_min) || 0,
-      avg_mouse_per_min: Number(row.avg_mouse_per_min) || 0,
-      total_session_time_seconds: Number(row.total_session_time_seconds) || 0,
-      effective_work_seconds: Number(row.effective_work_seconds) || 0,
-      productivity_score: Number(row.productivity_score) || 0,
-      days_count: Number(row.days_count) || 0,
-      is_realtime: false, // Indica que viene de datos pre-calculados
-      calculated_at: new Date().toISOString(),
-    }));
+    // ✅ OPTIMIZACIÓN: Obtener app_usage y browser_usage para TODOS los contractors en 2 queries
+    // en lugar de 2 queries por cada contractor (N+1 problem)
+    const fromDate = new Date(fromStr);
+    const toDate = new Date(toStr);
+    toDate.setUTCHours(23, 59, 59, 999);
+
+    const resultContractorIds = results.map((r) => r.contractor_id);
+
+    // Obtener todos los app_usage y browser_usage en paralelo (solo 2 queries totales)
+    const [appUsageMap, browserUsageMap] = await Promise.all([
+      this.usageDataService.getAppUsageAggregatedForMultiple(
+        resultContractorIds,
+        fromDate,
+        toDate,
+      ),
+      this.usageDataService.getBrowserUsageAggregatedForMultiple(
+        resultContractorIds,
+        fromDate,
+        toDate,
+      ),
+    ]);
+
+    // Formatear resultados usando los maps obtenidos
+    const enrichedResults = results.map((row) => {
+      const appUsage = appUsageMap.get(row.contractor_id) || [];
+      const browserUsage = browserUsageMap.get(row.contractor_id) || [];
+
+      return {
+        contractor_id: row.contractor_id,
+        workday: row.workday,
+        total_beats: Number(row.total_beats) || 0,
+        active_beats: Number(row.active_beats) || 0,
+        idle_beats: Number(row.idle_beats) || 0,
+        active_percentage: Number(row.active_percentage) || 0,
+        total_keyboard_inputs: Number(row.total_keyboard_inputs) || 0,
+        total_mouse_clicks: Number(row.total_mouse_clicks) || 0,
+        avg_keyboard_per_min: Number(row.avg_keyboard_per_min) || 0,
+        avg_mouse_per_min: Number(row.avg_mouse_per_min) || 0,
+        total_session_time_seconds: Number(row.total_session_time_seconds) || 0,
+        effective_work_seconds: Number(row.effective_work_seconds) || 0,
+        productivity_score: Number(row.productivity_score) || 0,
+        days_count: Number(row.days_count) || 0,
+        app_usage: appUsage.map((a) => ({
+          appName: a.appName,
+          seconds: a.seconds,
+        })),
+        browser_usage: browserUsage.map((b) => ({
+          domain: b.domain,
+          seconds: b.seconds,
+        })),
+        is_realtime: false, // Indica que viene de datos pre-calculados
+        calculated_at: new Date().toISOString(),
+      };
+    });
+
+    return enrichedResults;
   }
 
   /**
@@ -668,27 +707,43 @@ export class RealtimeMetricsService {
     const toStr = toDate.toISOString().split('T')[0];
 
     // ✅ OPTIMIZACIÓN: Usar contractor_daily_metrics en lugar de calcular desde beats
+    // Usar subquery para evitar conflictos de agregaciones anidadas en ClickHouse
     const query = `
       SELECT 
         contractor_id,
         '${fromStr} to ${toStr}' AS workday,
-        sum(total_beats) AS total_beats,
-        sum(active_beats) AS active_beats,
-        sum(idle_beats) AS idle_beats,
-        100.0 * sum(active_beats) / nullIf(sum(total_beats), 0) AS active_percentage,
-        sum(total_keyboard_inputs) AS total_keyboard_inputs,
-        sum(total_mouse_clicks) AS total_mouse_clicks,
-        sum(avg_keyboard_per_min * total_beats) / nullIf(sum(total_beats), 0) AS avg_keyboard_per_min,
-        sum(avg_mouse_per_min * total_beats) / nullIf(sum(total_beats), 0) AS avg_mouse_per_min,
-        sum(total_session_time_seconds) AS total_session_time_seconds,
-        sum(effective_work_seconds) AS effective_work_seconds,
-        sum(productivity_score * total_beats) / nullIf(sum(total_beats), 0) AS productivity_score,
-        count() AS days_count
-      FROM contractor_daily_metrics
-      WHERE contractor_id = '${contractorId}'
-        AND workday >= '${fromStr}'
-        AND workday <= '${toStr}'
-      GROUP BY contractor_id
+        _total_beats AS total_beats,
+        _active_beats AS active_beats,
+        _idle_beats AS idle_beats,
+        100.0 * _active_beats / nullIf(_total_beats, 0) AS active_percentage,
+        _total_keyboard_inputs AS total_keyboard_inputs,
+        _total_mouse_clicks AS total_mouse_clicks,
+        _sum_keyboard_weighted / nullIf(_total_beats, 0) AS avg_keyboard_per_min,
+        _sum_mouse_weighted / nullIf(_total_beats, 0) AS avg_mouse_per_min,
+        _total_session_time_seconds AS total_session_time_seconds,
+        _effective_work_seconds AS effective_work_seconds,
+        _sum_productivity_weighted / nullIf(_total_beats, 0) AS productivity_score,
+        _days_count AS days_count
+      FROM (
+        SELECT 
+          contractor_id,
+          sum(total_beats) AS _total_beats,
+          sum(active_beats) AS _active_beats,
+          sum(idle_beats) AS _idle_beats,
+          sum(total_keyboard_inputs) AS _total_keyboard_inputs,
+          sum(total_mouse_clicks) AS _total_mouse_clicks,
+          sum(avg_keyboard_per_min * total_beats) AS _sum_keyboard_weighted,
+          sum(avg_mouse_per_min * total_beats) AS _sum_mouse_weighted,
+          sum(total_session_time_seconds) AS _total_session_time_seconds,
+          sum(effective_work_seconds) AS _effective_work_seconds,
+          sum(productivity_score * total_beats) AS _sum_productivity_weighted,
+          count() AS _days_count
+        FROM contractor_daily_metrics
+        WHERE contractor_id = '${contractorId}'
+          AND workday >= '${fromStr}'
+          AND workday <= '${toStr}'
+        GROUP BY contractor_id
+      )
     `;
 
     const results = await this.clickHouseService.query<any>(query);
@@ -708,11 +763,28 @@ export class RealtimeMetricsService {
         total_session_time_seconds: 0,
         effective_work_seconds: 0,
         productivity_score: 0,
+        app_usage: [],
+        browser_usage: [],
         is_realtime: false,
       };
     }
 
     const row = results[0];
+
+    // Obtener app_usage y browser_usage para el rango de fechas
+    const [appUsage, browserUsage] = await Promise.all([
+      this.usageDataService.getAppUsageAggregated(
+        contractorId,
+        fromDate,
+        toDate,
+      ),
+      this.usageDataService.getBrowserUsageAggregated(
+        contractorId,
+        fromDate,
+        toDate,
+      ),
+    ]);
+
     return {
       contractor_id: row.contractor_id,
       workday: row.workday,
@@ -728,6 +800,14 @@ export class RealtimeMetricsService {
       effective_work_seconds: Number(row.effective_work_seconds) || 0,
       productivity_score: Number(row.productivity_score) || 0,
       days_count: Number(row.days_count) || 0,
+      app_usage: appUsage.map((a) => ({
+        appName: a.appName,
+        seconds: a.seconds,
+      })),
+      browser_usage: browserUsage.map((b) => ({
+        domain: b.domain,
+        seconds: b.seconds,
+      })),
       is_realtime: false,
       calculated_at: new Date().toISOString(),
     };
@@ -1035,45 +1115,14 @@ export class RealtimeMetricsService {
         fromDate.setUTCHours(0, 0, 0, 0);
       }
 
+      // ✅ OPTIMIZACIÓN: getAllRealtimeMetricsByDateRange ya devuelve datos agregados
+      // (un registro por contractor con productivity_score calculado como promedio ponderado)
+      // No necesitamos hacer agregación adicional
       allMetrics = await this.getAllRealtimeMetricsByDateRange(
         fromDate,
         today,
         useCache,
         undefined,
-      );
-
-      // Para semana y mes, calcular promedio de productividad_score por contractor
-      const contractorMap = new Map<string, { scores: number[]; data: any }>();
-
-      for (const metric of allMetrics) {
-        if (
-          metric.productivity_score !== null &&
-          metric.productivity_score !== undefined
-        ) {
-          const contractorId = metric.contractor_id;
-          if (!contractorMap.has(contractorId)) {
-            contractorMap.set(contractorId, {
-              scores: [],
-              data: metric,
-            });
-          }
-          contractorMap
-            .get(contractorId)!
-            .scores.push(metric.productivity_score);
-        }
-      }
-
-      // Calcular promedio y crear array de resultados
-      allMetrics = Array.from(contractorMap.entries()).map(
-        ([, { scores, data }]) => {
-          const avgScore =
-            scores.reduce((sum, score) => sum + score, 0) / scores.length;
-          return {
-            ...data,
-            productivity_score: avgScore,
-            days_count: scores.length,
-          };
-        },
       );
     }
 
@@ -1081,10 +1130,17 @@ export class RealtimeMetricsService {
     const sorted = allMetrics
       .filter(
         (m) =>
-          m.productivity_score !== null && m.productivity_score !== undefined,
+          m.productivity_score !== null &&
+          m.productivity_score !== undefined &&
+          !isNaN(Number(m.productivity_score)) &&
+          Number(m.productivity_score) > 0,
       )
       .sort((a, b) => (b.productivity_score || 0) - (a.productivity_score || 0))
       .slice(0, 5);
+
+    this.logger.debug(
+      `getTop5BestRanking(${period}): Found ${sorted.length} contractors from ${allMetrics.length} total`,
+    );
 
     return sorted;
   }
@@ -1123,45 +1179,14 @@ export class RealtimeMetricsService {
         fromDate.setUTCHours(0, 0, 0, 0);
       }
 
+      // ✅ OPTIMIZACIÓN: getAllRealtimeMetricsByDateRange ya devuelve datos agregados
+      // (un registro por contractor con productivity_score calculado como promedio ponderado)
+      // No necesitamos hacer agregación adicional
       allMetrics = await this.getAllRealtimeMetricsByDateRange(
         fromDate,
         today,
         useCache,
         undefined,
-      );
-
-      // Para semana y mes, calcular promedio de productividad_score por contractor
-      const contractorMap = new Map<string, { scores: number[]; data: any }>();
-
-      for (const metric of allMetrics) {
-        if (
-          metric.productivity_score !== null &&
-          metric.productivity_score !== undefined
-        ) {
-          const contractorId = metric.contractor_id;
-          if (!contractorMap.has(contractorId)) {
-            contractorMap.set(contractorId, {
-              scores: [],
-              data: metric,
-            });
-          }
-          contractorMap
-            .get(contractorId)!
-            .scores.push(metric.productivity_score);
-        }
-      }
-
-      // Calcular promedio y crear array de resultados
-      allMetrics = Array.from(contractorMap.entries()).map(
-        ([, { scores, data }]) => {
-          const avgScore =
-            scores.reduce((sum, score) => sum + score, 0) / scores.length;
-          return {
-            ...data,
-            productivity_score: avgScore,
-            days_count: scores.length,
-          };
-        },
       );
     }
 
@@ -1169,10 +1194,17 @@ export class RealtimeMetricsService {
     const sorted = allMetrics
       .filter(
         (m) =>
-          m.productivity_score !== null && m.productivity_score !== undefined,
+          m.productivity_score !== null &&
+          m.productivity_score !== undefined &&
+          !isNaN(Number(m.productivity_score)) &&
+          Number(m.productivity_score) >= 0,
       )
       .sort((a, b) => (a.productivity_score || 0) - (b.productivity_score || 0))
       .slice(0, 5);
+
+    this.logger.debug(
+      `getTop5WorstRanking(${period}): Found ${sorted.length} contractors from ${allMetrics.length} total`,
+    );
 
     return sorted;
   }

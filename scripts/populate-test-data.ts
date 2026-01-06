@@ -28,10 +28,9 @@ const WORK_HOURS_MIN = 6; // Horas mínimas de trabajo por día
 const WORK_HOURS_MAX = 8; // Horas máximas de trabajo por día
 const BEAT_INTERVAL_SECONDS = 15; // Cada heartbeat es de 15 segundos
 
-// Fechas de inicio y fin para generar datos (2 meses atrás hasta hoy)
-const END_DATE = new Date(); // Hoy
-const START_DATE = new Date(END_DATE);
-START_DATE.setMonth(START_DATE.getMonth() - 2); // 2 meses atrás
+// Fechas de inicio y fin para generar datos (10 de noviembre de 2025 a 10 de enero de 2026)
+const START_DATE = new Date(2025, 10, 10); // 10 de noviembre de 2025 (mes 10 = noviembre, 0-indexed)
+const END_DATE = new Date(2026, 0, 10); // 10 de enero de 2026 (mes 0 = enero)
 
 const PRODUCTIVE_APPS = ['Code', 'Notion'];
 const NEUTRAL_APPS = ['Chrome', 'Edge', 'Slack', 'Teams'];
