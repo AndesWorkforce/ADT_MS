@@ -10,12 +10,8 @@ import {
   BrowserUsageData,
 } from '../transformers/activity-to-daily-metrics.transformer';
 import { ActivityToDailyMetricsTransformer } from '../transformers/activity-to-daily-metrics.transformer';
+import { RedisKeys, RedisService } from 'src/redis';
 
-/**
- * Servicio para calcular métricas de productividad en tiempo real.
- * OPTIMIZADO: Usa contractor_daily_metrics para rangos históricos.
- * Solo calcula en tiempo real para el día actual.
- */
 @Injectable()
 export class RealtimeMetricsService {
   private readonly logger = new Logger(RealtimeMetricsService.name);
@@ -24,6 +20,7 @@ export class RealtimeMetricsService {
 
   constructor(
     private readonly clickHouseService: ClickHouseService,
+    private readonly redisService: RedisService,
     private readonly dimensionsService: DimensionsService,
     private readonly usageDataService: UsageDataService,
     private readonly activityToDailyMetricsTransformer: ActivityToDailyMetricsTransformer,
@@ -31,33 +28,17 @@ export class RealtimeMetricsService {
 
   /**
    * Calcula métricas de productividad en tiempo real para un contractor.
-   * Usa caché para evitar recalcular constantemente.
+   * El caché será manejado por Redis.
    *
    * @param contractorId ID del contractor
    * @param workday Fecha del día (por defecto: hoy)
-   * @param useCache Si usar caché (default: true)
    * @returns Métricas de productividad del día
    */
-  async getRealtimeMetrics(
-    contractorId: string,
-    workday?: Date,
-    useCache: boolean = true,
-  ) {
+  async getRealtimeMetrics(contractorId: string, workday?: Date) {
     // Crear una copia del Date para no modificar el original
     const workdayDate = workday ? new Date(workday) : new Date();
     workdayDate.setUTCHours(0, 0, 0, 0); // Usar UTC para evitar problemas de zona horaria
     const workdayStr = workdayDate.toISOString().split('T')[0];
-
-    const cacheKey = `realtime:${contractorId}:${workdayStr}`;
-
-    // Verificar caché
-    if (useCache) {
-      const cached = this.cache.get(cacheKey);
-      if (cached && cached.expires > Date.now()) {
-        this.logger.debug(`Cache hit for ${cacheKey}`);
-        return cached.data;
-      }
-    }
 
     // Calcular métricas desde contractor_activity_15s
     const metrics = await this.calculateMetrics(contractorId, workdayDate);
@@ -69,14 +50,6 @@ export class RealtimeMetricsService {
       is_realtime: true,
       calculated_at: new Date().toISOString(),
     };
-
-    // Guardar en caché
-    if (useCache) {
-      this.cache.set(cacheKey, {
-        data: result,
-        expires: Date.now() + this.CACHE_TTL_MS,
-      });
-    }
 
     return result;
   }
@@ -278,13 +251,11 @@ export class RealtimeMetricsService {
    * Enriquece los datos con información del contractor (nombre, email, job_position, country, client, team).
    *
    * @param workday Fecha del día (por defecto: hoy)
-   * @param useCache Si usar caché (default: true)
    * @param filters Filtros opcionales para filtrar contractors
    * @returns Array de métricas de productividad por contractor con información enriquecida
    */
   async getAllRealtimeMetrics(
     workday?: Date,
-    useCache: boolean = true,
     filters?: {
       name?: string;
       job_position?: string;
@@ -293,12 +264,10 @@ export class RealtimeMetricsService {
       team_id?: string;
     },
   ): Promise<any[]> {
-    // Crear una copia del Date para no modificar el original
     const workdayDate = workday ? new Date(workday) : new Date();
-    workdayDate.setUTCHours(0, 0, 0, 0); // Usar UTC para evitar problemas de zona horaria
+    workdayDate.setUTCHours(0, 0, 0, 0);
     const workdayStr = workdayDate.toISOString().split('T')[0];
 
-    // Obtener contractor_ids que cumplen con los filtros (si se proporcionan)
     let contractorIds: string[] = [];
     if (
       filters &&
@@ -310,14 +279,12 @@ export class RealtimeMetricsService {
       }
     }
 
-    // Construir query para obtener contractors con datos del día
     let contractorsQuery = `
       SELECT DISTINCT contractor_id
       FROM contractor_activity_15s
       WHERE toDate(beat_timestamp) = '${workdayStr}'
     `;
 
-    // Si hay filtros, agregar condición para filtrar por contractor_ids
     if (contractorIds.length > 0) {
       const contractorIdsList = contractorIds.map((id) => `'${id}'`).join(',');
       contractorsQuery += ` AND contractor_id IN (${contractorIdsList})`;
@@ -331,14 +298,12 @@ export class RealtimeMetricsService {
       return [];
     }
 
-    // Calcular métricas para cada contractor en paralelo
     const metricsPromises = contractors.map((contractor) =>
-      this.getRealtimeMetrics(contractor.contractor_id, workdayDate, useCache),
+      this.getRealtimeMetrics(contractor.contractor_id, workdayDate),
     );
 
     const allMetrics = await Promise.all(metricsPromises);
 
-    // Filtrar solo aquellos que tienen métricas (total_beats > 0)
     const metricsWithData = allMetrics.filter(
       (metric) => metric.total_beats > 0,
     );
@@ -347,7 +312,6 @@ export class RealtimeMetricsService {
       return [];
     }
 
-    // Enriquecer con información del contractor usando JOINs
     const enrichedMetrics =
       await this.enrichMetricsWithContractorInfo(metricsWithData);
 
@@ -358,17 +322,16 @@ export class RealtimeMetricsService {
    * Obtiene métricas en tiempo real agregadas por rango de fechas para todos los contratistas.
    * OPTIMIZADO: Usa contractor_daily_metrics para rangos históricos (95% más rápido).
    * Solo calcula en tiempo real para el día actual.
+   * El caché será manejado por Redis.
    *
    * @param fromDate Fecha de inicio del rango
    * @param toDate Fecha de fin del rango
-   * @param useCache Si usar caché (default: true)
    * @param filters Filtros opcionales para filtrar contractors
    * @returns Array de métricas agregadas por contractor con información enriquecida
    */
   async getAllRealtimeMetricsByDateRange(
     fromDate: Date,
     toDate: Date,
-    useCache: boolean = true,
     filters?: {
       name?: string;
       job_position?: string;
@@ -377,7 +340,6 @@ export class RealtimeMetricsService {
       team_id?: string;
     },
   ): Promise<any[]> {
-    // Normalizar fechas a UTC
     const from = new Date(fromDate);
     from.setUTCHours(0, 0, 0, 0);
     const to = new Date(toDate);
@@ -385,55 +347,43 @@ export class RealtimeMetricsService {
 
     const fromStr = from.toISOString().split('T')[0];
     const toStr = to.toISOString().split('T')[0];
-
-    // Construir clave de caché incluyendo filtros
-    const filtersKey = filters ? JSON.stringify(filters) : '';
-    const cacheKey = `realtime-metrics-range:${fromStr}:${toStr}:${filtersKey}`;
-    if (useCache) {
-      const cached = this.cache.get(cacheKey);
-      if (cached && cached.expires > Date.now()) {
-        this.logger.debug(`Cache hit for ${cacheKey}`);
-        return cached.data;
-      }
-    }
-
-    // Obtener contractor_ids que cumplen con los filtros (si se proporcionan)
-    let contractorIds: string[] = [];
-    if (
-      filters &&
-      Object.values(filters).some((v) => v !== undefined && v !== null)
-    ) {
-      contractorIds = await this.getFilteredContractorIds(filters);
-      if (contractorIds.length === 0) {
-        return [];
-      }
-    }
-
-    // ✅ OPTIMIZACIÓN: Usar contractor_daily_metrics para rangos históricos
-    // En lugar de calcular desde events_raw para cada contractor, usamos datos pre-calculados
-    const allMetrics = await this.getAggregatedMetricsFromDailyTable(
+    const cacheKey = RedisKeys.allRealTimeMetricsByDateRange(
       fromStr,
       toStr,
-      contractorIds,
+      filters,
     );
 
-    if (allMetrics.length === 0) {
-      return [];
-    }
+    return this.redisService.getOrSet(
+      cacheKey,
+      async () => {
+        let contractorIds: string[] = [];
+        if (
+          filters &&
+          Object.values(filters).some((v) => v !== undefined && v !== null)
+        ) {
+          contractorIds = await this.getFilteredContractorIds(filters);
+          if (contractorIds.length === 0) {
+            return [];
+          }
+        }
 
-    // Enriquecer con información del contractor usando JOINs
-    const enrichedMetrics =
-      await this.enrichMetricsWithContractorInfo(allMetrics);
+        const allMetrics = await this.getAggregatedMetricsFromDailyTable(
+          fromStr,
+          toStr,
+          contractorIds,
+        );
 
-    // Guardar en caché (TTL 30 segundos)
-    if (useCache) {
-      this.cache.set(cacheKey, {
-        data: enrichedMetrics,
-        expires: Date.now() + 30000,
-      });
-    }
+        if (allMetrics.length === 0) {
+          return [];
+        }
 
-    return enrichedMetrics;
+        const enrichedMetrics =
+          await this.enrichMetricsWithContractorInfo(allMetrics);
+
+        return enrichedMetrics;
+      },
+      envs.redis.ttl,
+    );
   }
 
   /**
@@ -635,39 +585,24 @@ export class RealtimeMetricsService {
 
   /**
    * Obtiene métricas de productividad en tiempo real para un contractor en un rango de fechas.
-   * Usa caché para evitar recalcular constantemente.
+   * Agrega métricas de múltiples días en un solo objeto.
+   * El caché será manejado por Redis.
    *
    * @param contractorId ID del contractor
    * @param fromDate Fecha de inicio del rango
    * @param toDate Fecha de fin del rango
-   * @param useCache Si usar caché (default: true)
    * @returns Métricas de productividad agregadas para el rango
    */
   async getRealtimeMetricsForDateRange(
     contractorId: string,
     fromDate: Date,
     toDate: Date,
-    useCache: boolean = true,
   ): Promise<any> {
     // Normalizar fechas a UTC
     const from = new Date(fromDate);
     from.setUTCHours(0, 0, 0, 0);
     const to = new Date(toDate);
     to.setUTCHours(23, 59, 59, 999);
-
-    const fromStr = from.toISOString().split('T')[0];
-    const toStr = to.toISOString().split('T')[0];
-
-    const cacheKey = `realtime-range:${contractorId}:${fromStr}:${toStr}`;
-
-    // Verificar caché
-    if (useCache) {
-      const cached = this.cache.get(cacheKey);
-      if (cached && cached.expires > Date.now()) {
-        this.logger.debug(`Cache hit for ${cacheKey}`);
-        return cached.data;
-      }
-    }
 
     // Calcular métricas agregadas para el rango
     const metrics = await this.calculateMetricsForDateRange(
@@ -682,14 +617,6 @@ export class RealtimeMetricsService {
     ]);
 
     const result = enrichedMetrics.length > 0 ? enrichedMetrics[0] : metrics;
-
-    // Guardar en caché
-    if (useCache) {
-      this.cache.set(cacheKey, {
-        data: result,
-        expires: Date.now() + this.CACHE_TTL_MS,
-      });
-    }
 
     return result;
   }
@@ -1083,20 +1010,19 @@ export class RealtimeMetricsService {
 
   /**
    * Obtiene el top 5 de mejores rankings de productividad.
+   * El caché será manejado por Redis.
    * @param period Período: 'day' (día actual), 'week' (última semana), 'month' (mes actual)
-   * @param useCache Si usar caché (default: true)
    * @returns Top 5 contractors con mejor productividad_score del período
    */
   async getTop5BestRanking(
     period: 'day' | 'week' | 'month' = 'day',
-    useCache: boolean = true,
   ): Promise<any[]> {
     let allMetrics: any[];
 
     if (period === 'day') {
       // Día actual
       const today = new Date();
-      allMetrics = await this.getAllRealtimeMetrics(today, useCache, undefined);
+      allMetrics = await this.getAllRealtimeMetrics(today, undefined);
     } else {
       // Semana o mes: calcular rango de fechas
       const today = new Date();
@@ -1121,7 +1047,6 @@ export class RealtimeMetricsService {
       allMetrics = await this.getAllRealtimeMetricsByDateRange(
         fromDate,
         today,
-        useCache,
         undefined,
       );
     }
@@ -1147,20 +1072,19 @@ export class RealtimeMetricsService {
 
   /**
    * Obtiene el top 5 de peores rankings de productividad.
+   * El caché será manejado por Redis.
    * @param period Período: 'day' (día actual), 'week' (última semana), 'month' (mes actual)
-   * @param useCache Si usar caché (default: true)
    * @returns Top 5 contractors con peor productividad_score del período
    */
   async getTop5WorstRanking(
     period: 'day' | 'week' | 'month' = 'day',
-    useCache: boolean = true,
   ): Promise<any[]> {
     let allMetrics: any[];
 
     if (period === 'day') {
       // Día actual
       const today = new Date();
-      allMetrics = await this.getAllRealtimeMetrics(today, useCache, undefined);
+      allMetrics = await this.getAllRealtimeMetrics(today, undefined);
     } else {
       // Semana o mes: calcular rango de fechas
       const today = new Date();
@@ -1185,7 +1109,6 @@ export class RealtimeMetricsService {
       allMetrics = await this.getAllRealtimeMetricsByDateRange(
         fromDate,
         today,
-        useCache,
         undefined,
       );
     }
@@ -1218,13 +1141,12 @@ export class RealtimeMetricsService {
    *   - Esto refleja la presencialidad real: si un contractor faltó algunos días,
    *     el porcentaje baja proporcionalmente.
    *
+   * El caché será manejado por Redis.
    * @param period 'day' (día actual), 'week' (última semana), 'month' (mes actual)
-   * @param useCache Si usar caché (default: true)
    * @returns Objeto con porcentajes y conteos de contractors activos/inactivos
    */
   async getActiveTalentPercentage(
     period: 'day' | 'week' | 'month' = 'day',
-    useCache: boolean = true,
   ): Promise<{
     active_percentage: number;
     inactive_percentage: number;
@@ -1266,16 +1188,6 @@ export class RealtimeMetricsService {
     const fromStr = fromDate.toISOString().split('T')[0];
     const toStr = today.toISOString().split('T')[0];
 
-    // Verificar caché
-    const cacheKey = `active-talent:${period}:${fromStr}:${toStr}`;
-    if (useCache) {
-      const cached = this.cache.get(cacheKey);
-      if (cached && cached.expires > Date.now()) {
-        this.logger.debug(`Cache hit for ${cacheKey}`);
-        return cached.data;
-      }
-    }
-
     try {
       // 1. Obtener el total de contractors desde contractor_info_raw
       const totalContractorsQuery = `
@@ -1297,13 +1209,6 @@ export class RealtimeMetricsService {
           inactive_contractors: 0,
           period: periodStr,
         };
-
-        if (useCache) {
-          this.cache.set(cacheKey, {
-            data: result,
-            expires: Date.now() + this.CACHE_TTL_MS,
-          });
-        }
 
         return result;
       }
@@ -1341,13 +1246,6 @@ export class RealtimeMetricsService {
           inactive_contractors: inactiveContractors,
           period: periodStr,
         };
-
-        if (useCache) {
-          this.cache.set(cacheKey, {
-            data: result,
-            expires: Date.now() + this.CACHE_TTL_MS,
-          });
-        }
 
         this.logger.debug(
           `Active talent percentage for ${period}: ${activePercentage}% (${activeContractors}/${totalContractors})`,
@@ -1443,13 +1341,6 @@ export class RealtimeMetricsService {
         period: periodStr,
         daily_breakdown: dailyBreakdown,
       };
-
-      if (useCache) {
-        this.cache.set(cacheKey, {
-          data: result,
-          expires: Date.now() + this.CACHE_TTL_MS,
-        });
-      }
 
       this.logger.debug(
         `Active talent percentage for ${period}: ${avgActivePercentage}% avg over ${daysDiff} days (breakdown: ${dailyBreakdown.map((d) => `${d.date}:${d.percentage}%`).join(', ')})`,

@@ -121,11 +121,10 @@ export class AdtListener {
       workday?: string;
       from?: string;
       to?: string;
-      useCache?: boolean;
     },
   ) {
     try {
-      const { contractorId, workday, from, to, useCache = true } = data;
+      const { contractorId, workday, from, to } = data;
 
       // Si se proporciona from y to, usar rango de fechas
       if (from && to) {
@@ -135,7 +134,6 @@ export class AdtListener {
           contractorId,
           fromDate,
           toDate,
-          useCache,
         );
       }
 
@@ -144,7 +142,6 @@ export class AdtListener {
       return await this.realtimeMetricsService.getRealtimeMetrics(
         contractorId,
         workdayDate,
-        useCache,
       );
     } catch (error) {
       logError(this.logger, 'Error in getRealtimeMetrics', error);
@@ -173,7 +170,6 @@ export class AdtListener {
       country?: string;
       client_id?: string;
       team_id?: string;
-      useCache?: boolean;
     },
   ) {
     const pattern = getMessagePattern('adt.getAllRealtimeMetrics');
@@ -190,7 +186,6 @@ export class AdtListener {
         country,
         client_id,
         team_id,
-        useCache = true,
       } = data;
 
       const filters = {
@@ -208,7 +203,6 @@ export class AdtListener {
         return await this.realtimeMetricsService.getAllRealtimeMetricsByDateRange(
           fromDate,
           toDate,
-          useCache,
           filters,
         );
       }
@@ -217,7 +211,6 @@ export class AdtListener {
       const workdayDate = workday ? new Date(workday) : undefined;
       return await this.realtimeMetricsService.getAllRealtimeMetrics(
         workdayDate,
-        useCache,
         filters,
       );
     } catch (error) {
@@ -472,16 +465,12 @@ export class AdtListener {
     @Payload()
     data: {
       period?: 'day' | 'week' | 'month';
-      useCache?: boolean;
     },
   ) {
     try {
-      const { period = 'day', useCache = true } = data;
+      const { period = 'day' } = data;
 
-      return await this.realtimeMetricsService.getTop5BestRanking(
-        period,
-        useCache,
-      );
+      return await this.realtimeMetricsService.getTop5BestRanking(period);
     } catch (error) {
       logError(this.logger, 'Error in getTop5BestRanking', error);
       throw error;
@@ -497,16 +486,12 @@ export class AdtListener {
     @Payload()
     data: {
       period?: 'day' | 'week' | 'month';
-      useCache?: boolean;
     },
   ) {
     try {
-      const { period = 'day', useCache = true } = data;
+      const { period = 'day' } = data;
 
-      return await this.realtimeMetricsService.getTop5WorstRanking(
-        period,
-        useCache,
-      );
+      return await this.realtimeMetricsService.getTop5WorstRanking(period);
     } catch (error) {
       logError(this.logger, 'Error in getTop5WorstRanking', error);
       throw error;
@@ -523,15 +508,13 @@ export class AdtListener {
     @Payload()
     data: {
       period?: 'day' | 'week' | 'month';
-      useCache?: boolean;
     },
   ) {
     try {
-      const { period = 'day', useCache = true } = data;
+      const { period = 'day' } = data;
 
       return await this.realtimeMetricsService.getActiveTalentPercentage(
         period,
-        useCache,
       );
     } catch (error) {
       logError(this.logger, 'Error in getActiveTalentPercentage', error);
