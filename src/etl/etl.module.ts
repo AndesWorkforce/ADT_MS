@@ -1,11 +1,18 @@
 import { Module } from '@nestjs/common';
 
 import { ClickHouseModule } from '../clickhouse/clickhouse.module';
+// Services
+import { ActivityService } from './services/activity.service';
+import { AppUsageService } from './services/app-usage.service';
+import { DailyMetricsService } from './services/daily-metrics.service';
 import { DimensionsInitService } from './services/dimensions-init.service';
 import { DimensionsService } from './services/dimensions.service';
 import { EtlService } from './services/etl.service';
+import { RankingService } from './services/ranking.service';
 import { RealtimeMetricsService } from './services/realtime-metrics.service';
+import { SessionSummariesService } from './services/session-summaries.service';
 import { UsageDataService } from './services/usage-data.service';
+// Transformers
 import { ActivityToDailyMetricsTransformer } from './transformers/activity-to-daily-metrics.transformer';
 import { ActivityToSessionSummaryTransformer } from './transformers/activity-to-session-summary.transformer';
 import { EventsToActivityTransformer } from './transformers/events-to-activity.transformer';
@@ -13,21 +20,29 @@ import { EventsToActivityTransformer } from './transformers/events-to-activity.t
 @Module({
   imports: [ClickHouseModule],
   providers: [
-    // Services
+    ActivityService,
+    AppUsageService,
+    DailyMetricsService,
+    RankingService,
+    SessionSummariesService,
+    RealtimeMetricsService,
     DimensionsService,
     DimensionsInitService,
     EtlService,
-    RealtimeMetricsService,
     UsageDataService,
-    // Transformers
     EventsToActivityTransformer,
     ActivityToDailyMetricsTransformer,
     ActivityToSessionSummaryTransformer,
   ],
   exports: [
+    ActivityService,
+    AppUsageService,
+    DailyMetricsService,
+    RankingService,
+    SessionSummariesService,
+    RealtimeMetricsService,
     DimensionsService,
     EtlService,
-    RealtimeMetricsService,
     UsageDataService,
     EventsToActivityTransformer,
     ActivityToDailyMetricsTransformer,

@@ -2,26 +2,18 @@ import { Injectable, Logger } from '@nestjs/common';
 
 import { envs } from 'config';
 import { ClickHouseService } from '../../clickhouse/clickhouse.service';
-import { DimensionsService } from './dimensions.service';
 import { UsageDataService } from './usage-data.service';
 import { ContractorActivity15sDto } from '../dto/contractor-activity-15s.dto';
-import {
-  AppUsageData,
-  BrowserUsageData,
-} from '../transformers/activity-to-daily-metrics.transformer';
 import { ActivityToDailyMetricsTransformer } from '../transformers/activity-to-daily-metrics.transformer';
 import { RedisKeys, RedisService } from 'src/redis';
 
 @Injectable()
 export class RealtimeMetricsService {
   private readonly logger = new Logger(RealtimeMetricsService.name);
-  private readonly cache = new Map<string, { data: any; expires: number }>();
-  private readonly CACHE_TTL_MS = 30 * 1000; // 30 segundos
 
   constructor(
     private readonly clickHouseService: ClickHouseService,
     private readonly redisService: RedisService,
-    private readonly dimensionsService: DimensionsService,
     private readonly usageDataService: UsageDataService,
     private readonly activityToDailyMetricsTransformer: ActivityToDailyMetricsTransformer,
   ) {}
@@ -40,18 +32,29 @@ export class RealtimeMetricsService {
     workdayDate.setUTCHours(0, 0, 0, 0); // Usar UTC para evitar problemas de zona horaria
     const workdayStr = workdayDate.toISOString().split('T')[0];
 
-    // Calcular métricas desde contractor_activity_15s
-    const metrics = await this.calculateMetrics(contractorId, workdayDate);
+    const cacheKey = RedisKeys.realTimeMetricsByContractor(
+      contractorId,
+      workdayStr,
+    );
 
-    // Asegurar que workday se devuelva como string YYYY-MM-DD
-    const result = {
-      ...metrics,
-      workday: workdayStr, // Usar el string formateado en lugar del Date
-      is_realtime: true,
-      calculated_at: new Date().toISOString(),
-    };
+    return this.redisService.getOrSet(
+      cacheKey,
+      async () => {
+        // Calcular métricas desde contractor_activity_15s
+        const metrics = await this.calculateMetrics(contractorId, workdayDate);
 
-    return result;
+        // Asegurar que workday se devuelva como string YYYY-MM-DD
+        const result = {
+          ...metrics,
+          workday: workdayStr, // Usar el string formateado en lugar del Date
+          is_realtime: true,
+          calculated_at: new Date().toISOString(),
+        };
+
+        return result;
+      },
+      envs.redis.ttl,
+    );
   }
 
   /**
@@ -148,107 +151,10 @@ export class RealtimeMetricsService {
   }
 
   /**
-   * Obtiene datos de AppUsage para un contractor y día.
-   */
-  private async getAppUsageForDay(
-    contractorId: string,
-    workday: Date,
-  ): Promise<AppUsageData[]> {
-    const workdayStrForQuery = workday.toISOString().split('T')[0];
-
-    const query = `
-      SELECT 
-        JSONExtractString(payload, 'AppUsage') AS app_usage_json,
-        timestamp
-      FROM events_raw
-      WHERE contractor_id = '${contractorId}'
-        AND toDate(timestamp) = '${workdayStrForQuery}'
-        AND JSONHas(payload, 'AppUsage')
-      ORDER BY timestamp
-    `;
-
-    const events = await this.clickHouseService.query<any>(query);
-
-    const appUsageMap: Record<string, number> = {};
-
-    for (const event of events) {
-      try {
-        const appUsageObj = JSON.parse(event.app_usage_json || '{}');
-        for (const [appName, seconds] of Object.entries(appUsageObj)) {
-          if (typeof seconds === 'number') {
-            const safe = seconds < 0 ? 0 : seconds;
-            appUsageMap[appName] = (appUsageMap[appName] || 0) + safe;
-          }
-        }
-      } catch {
-        // Ignorar errores de parsing
-      }
-    }
-
-    // Convertir a array de AppUsageData
-    const appUsage: AppUsageData[] = Object.entries(appUsageMap)
-      .map(([appName, seconds]) => ({
-        appName,
-        seconds: seconds < 0 ? 0 : seconds,
-      }))
-      .filter((u) => u.seconds > 0);
-
-    return appUsage;
-  }
-
-  /**
-   * Obtiene datos de Browser para un contractor y día.
-   */
-  private async getBrowserUsageForDay(
-    contractorId: string,
-    workday: Date,
-  ): Promise<BrowserUsageData[]> {
-    const workdayStrForQuery = workday.toISOString().split('T')[0];
-
-    const query = `
-      SELECT 
-        JSONExtractString(payload, 'browser') AS browser_json,
-        timestamp
-      FROM events_raw
-      WHERE contractor_id = '${contractorId}'
-        AND toDate(timestamp) = '${workdayStrForQuery}'
-        AND JSONHas(payload, 'browser')
-      ORDER BY timestamp
-    `;
-
-    const events = await this.clickHouseService.query<any>(query);
-
-    const browserUsageMap: Record<string, number> = {};
-
-    for (const event of events) {
-      try {
-        const browserObj = JSON.parse(event.browser_json || '{}');
-        for (const [domain, seconds] of Object.entries(browserObj)) {
-          if (typeof seconds === 'number') {
-            const safe = seconds < 0 ? 0 : seconds;
-            browserUsageMap[domain] = (browserUsageMap[domain] || 0) + safe;
-          }
-        }
-      } catch {
-        // Ignorar errores de parsing
-      }
-    }
-
-    // Convertir a array de BrowserUsageData
-    const browserUsage: BrowserUsageData[] = Object.entries(browserUsageMap)
-      .map(([domain, seconds]) => ({
-        domain,
-        seconds: seconds < 0 ? 0 : seconds,
-      }))
-      .filter((u) => u.seconds > 0);
-
-    return browserUsage;
-  }
-
-  /**
    * Obtiene métricas en tiempo real de todos los contratistas que tienen métricas para un día específico.
    * Solo devuelve contratistas que tienen datos (total_beats > 0).
    * Enriquece los datos con información del contractor (nombre, email, job_position, country, client, team).
+   * El caché será manejado por Redis.
    *
    * @param workday Fecha del día (por defecto: hoy)
    * @param filters Filtros opcionales para filtrar contractors
@@ -268,54 +174,64 @@ export class RealtimeMetricsService {
     workdayDate.setUTCHours(0, 0, 0, 0);
     const workdayStr = workdayDate.toISOString().split('T')[0];
 
-    let contractorIds: string[] = [];
-    if (
-      filters &&
-      Object.values(filters).some((v) => v !== undefined && v !== null)
-    ) {
-      contractorIds = await this.getFilteredContractorIds(filters);
-      if (contractorIds.length === 0) {
-        return [];
-      }
-    }
+    const cacheKey = RedisKeys.allRealTimeMetricsByWorkday(workdayStr, filters);
 
-    let contractorsQuery = `
-      SELECT DISTINCT contractor_id
-      FROM contractor_activity_15s
-      WHERE toDate(beat_timestamp) = '${workdayStr}'
-    `;
+    return this.redisService.getOrSet(
+      cacheKey,
+      async () => {
+        let contractorIds: string[] = [];
+        if (
+          filters &&
+          Object.values(filters).some((v) => v !== undefined && v !== null)
+        ) {
+          contractorIds = await this.getFilteredContractorIds(filters);
+          if (contractorIds.length === 0) {
+            return [];
+          }
+        }
 
-    if (contractorIds.length > 0) {
-      const contractorIdsList = contractorIds.map((id) => `'${id}'`).join(',');
-      contractorsQuery += ` AND contractor_id IN (${contractorIdsList})`;
-    }
+        let contractorsQuery = `
+          SELECT DISTINCT contractor_id
+          FROM contractor_activity_15s
+          WHERE toDate(beat_timestamp) = '${workdayStr}'
+        `;
 
-    const contractors = await this.clickHouseService.query<{
-      contractor_id: string;
-    }>(contractorsQuery);
+        if (contractorIds.length > 0) {
+          const contractorIdsList = contractorIds
+            .map((id) => `'${id}'`)
+            .join(',');
+          contractorsQuery += ` AND contractor_id IN (${contractorIdsList})`;
+        }
 
-    if (contractors.length === 0) {
-      return [];
-    }
+        const contractors = await this.clickHouseService.query<{
+          contractor_id: string;
+        }>(contractorsQuery);
 
-    const metricsPromises = contractors.map((contractor) =>
-      this.getRealtimeMetrics(contractor.contractor_id, workdayDate),
+        if (contractors.length === 0) {
+          return [];
+        }
+
+        const metricsPromises = contractors.map((contractor) =>
+          this.getRealtimeMetrics(contractor.contractor_id, workdayDate),
+        );
+
+        const allMetrics = await Promise.all(metricsPromises);
+
+        const metricsWithData = allMetrics.filter(
+          (metric) => metric.total_beats > 0,
+        );
+
+        if (metricsWithData.length === 0) {
+          return [];
+        }
+
+        const enrichedMetrics =
+          await this.enrichMetricsWithContractorInfo(metricsWithData);
+
+        return enrichedMetrics;
+      },
+      envs.redis.ttl,
     );
-
-    const allMetrics = await Promise.all(metricsPromises);
-
-    const metricsWithData = allMetrics.filter(
-      (metric) => metric.total_beats > 0,
-    );
-
-    if (metricsWithData.length === 0) {
-      return [];
-    }
-
-    const enrichedMetrics =
-      await this.enrichMetricsWithContractorInfo(metricsWithData);
-
-    return enrichedMetrics;
   }
 
   /**
@@ -456,16 +372,12 @@ export class RealtimeMetricsService {
     this.logger.debug(
       `📊 Fetched ${results.length} contractors from contractor_daily_metrics (${fromStr} to ${toStr})`,
     );
-
-    // ✅ OPTIMIZACIÓN: Obtener app_usage y browser_usage para TODOS los contractors en 2 queries
-    // en lugar de 2 queries por cada contractor (N+1 problem)
     const fromDate = new Date(fromStr);
     const toDate = new Date(toStr);
     toDate.setUTCHours(23, 59, 59, 999);
 
     const resultContractorIds = results.map((r) => r.contractor_id);
 
-    // Obtener todos los app_usage y browser_usage en paralelo (solo 2 queries totales)
     const [appUsageMap, browserUsageMap] = await Promise.all([
       this.usageDataService.getAppUsageAggregatedForMultiple(
         resultContractorIds,
@@ -479,7 +391,6 @@ export class RealtimeMetricsService {
       ),
     ]);
 
-    // Formatear resultados usando los maps obtenidos
     const enrichedResults = results.map((row) => {
       const appUsage = appUsageMap.get(row.contractor_id) || [];
       const browserUsage = browserUsageMap.get(row.contractor_id) || [];
@@ -583,48 +494,47 @@ export class RealtimeMetricsService {
     }
   }
 
-  /**
-   * Obtiene métricas de productividad en tiempo real para un contractor en un rango de fechas.
-   * Agrega métricas de múltiples días en un solo objeto.
-   * El caché será manejado por Redis.
-   *
-   * @param contractorId ID del contractor
-   * @param fromDate Fecha de inicio del rango
-   * @param toDate Fecha de fin del rango
-   * @returns Métricas de productividad agregadas para el rango
-   */
   async getRealtimeMetricsForDateRange(
     contractorId: string,
     fromDate: Date,
     toDate: Date,
   ): Promise<any> {
-    // Normalizar fechas a UTC
     const from = new Date(fromDate);
     from.setUTCHours(0, 0, 0, 0);
     const to = new Date(toDate);
     to.setUTCHours(23, 59, 59, 999);
 
-    // Calcular métricas agregadas para el rango
-    const metrics = await this.calculateMetricsForDateRange(
+    const fromStr = from.toISOString().split('T')[0];
+    const toStr = to.toISOString().split('T')[0];
+    const cacheKey = RedisKeys.realTimeMetricsByContractorRange(
       contractorId,
-      from,
-      to,
+      fromStr,
+      toStr,
     );
 
-    // Enriquecer con información del contractor
-    const enrichedMetrics = await this.enrichMetricsWithContractorInfo([
-      metrics,
-    ]);
+    return this.redisService.getOrSet(
+      cacheKey,
+      async () => {
+        const metrics = await this.calculateMetricsForDateRange(
+          contractorId,
+          from,
+          to,
+        );
 
-    const result = enrichedMetrics.length > 0 ? enrichedMetrics[0] : metrics;
+        // Enriquecer con información del contractor
+        const enrichedMetrics = await this.enrichMetricsWithContractorInfo([
+          metrics,
+        ]);
 
-    return result;
+        const result =
+          enrichedMetrics.length > 0 ? enrichedMetrics[0] : metrics;
+
+        return result;
+      },
+      envs.redis.ttl,
+    );
   }
 
-  /**
-   * Calcula métricas agregadas para un contractor en un rango de fechas.
-   * OPTIMIZADO: Usa contractor_daily_metrics para rangos históricos.
-   */
   private async calculateMetricsForDateRange(
     contractorId: string,
     fromDate: Date,
@@ -633,8 +543,6 @@ export class RealtimeMetricsService {
     const fromStr = fromDate.toISOString().split('T')[0];
     const toStr = toDate.toISOString().split('T')[0];
 
-    // ✅ OPTIMIZACIÓN: Usar contractor_daily_metrics en lugar de calcular desde beats
-    // Usar subquery para evitar conflictos de agregaciones anidadas en ClickHouse
     const query = `
       SELECT 
         contractor_id,
@@ -697,8 +605,6 @@ export class RealtimeMetricsService {
     }
 
     const row = results[0];
-
-    // Obtener app_usage y browser_usage para el rango de fechas
     const [appUsage, browserUsage] = await Promise.all([
       this.usageDataService.getAppUsageAggregated(
         contractorId,
@@ -738,128 +644,6 @@ export class RealtimeMetricsService {
       is_realtime: false,
       calculated_at: new Date().toISOString(),
     };
-  }
-
-  /**
-   * Obtiene datos de AppUsage para un contractor en un rango de fechas.
-   * Optimizado para evitar timeouts con grandes volúmenes de datos.
-   */
-  private async getAppUsageForDateRange(
-    contractorId: string,
-    fromDate: Date,
-    toDate: Date,
-  ): Promise<AppUsageData[]> {
-    const fromStr = fromDate.toISOString().split('T')[0];
-    const toStr = toDate.toISOString().split('T')[0];
-
-    // Optimizar query: usar LIMIT si el rango es muy grande (más de 7 días)
-    const daysDiff =
-      Math.ceil(
-        (toDate.getTime() - fromDate.getTime()) / (1000 * 60 * 60 * 24),
-      ) + 1;
-    const useLimit = daysDiff > 7;
-
-    const query = `
-      SELECT 
-        JSONExtractString(payload, 'AppUsage') AS app_usage_json,
-        timestamp
-      FROM events_raw
-      WHERE contractor_id = '${contractorId}'
-        AND toDate(timestamp) >= '${fromStr}'
-        AND toDate(timestamp) <= '${toStr}'
-        AND JSONHas(payload, 'AppUsage')
-      ORDER BY timestamp
-      ${useLimit ? 'LIMIT 100000' : ''}
-    `;
-
-    const events = await this.clickHouseService.query<any>(query);
-
-    const appUsageMap: Record<string, number> = {};
-
-    for (const event of events) {
-      try {
-        const appUsageObj = JSON.parse(event.app_usage_json || '{}');
-        for (const [appName, seconds] of Object.entries(appUsageObj)) {
-          if (typeof seconds === 'number') {
-            const safe = seconds < 0 ? 0 : seconds;
-            appUsageMap[appName] = (appUsageMap[appName] || 0) + safe;
-          }
-        }
-      } catch {
-        // Ignorar errores de parsing
-      }
-    }
-
-    // Convertir a array de AppUsageData
-    const appUsage: AppUsageData[] = Object.entries(appUsageMap)
-      .map(([appName, seconds]) => ({
-        appName,
-        seconds: seconds < 0 ? 0 : seconds,
-      }))
-      .filter((u) => u.seconds > 0);
-
-    return appUsage;
-  }
-
-  /**
-   * Obtiene datos de Browser para un contractor en un rango de fechas.
-   * Optimizado para evitar timeouts con grandes volúmenes de datos.
-   */
-  private async getBrowserUsageForDateRange(
-    contractorId: string,
-    fromDate: Date,
-    toDate: Date,
-  ): Promise<BrowserUsageData[]> {
-    const fromStr = fromDate.toISOString().split('T')[0];
-    const toStr = toDate.toISOString().split('T')[0];
-
-    // Optimizar query: usar LIMIT si el rango es muy grande (más de 7 días)
-    const daysDiff =
-      Math.ceil(
-        (toDate.getTime() - fromDate.getTime()) / (1000 * 60 * 60 * 24),
-      ) + 1;
-    const useLimit = daysDiff > 7;
-
-    const query = `
-      SELECT 
-        JSONExtractString(payload, 'browser') AS browser_json,
-        timestamp
-      FROM events_raw
-      WHERE contractor_id = '${contractorId}'
-        AND toDate(timestamp) >= '${fromStr}'
-        AND toDate(timestamp) <= '${toStr}'
-        AND JSONHas(payload, 'browser')
-      ORDER BY timestamp
-      ${useLimit ? 'LIMIT 100000' : ''}
-    `;
-
-    const events = await this.clickHouseService.query<any>(query);
-
-    const browserUsageMap: Record<string, number> = {};
-
-    for (const event of events) {
-      try {
-        const browserObj = JSON.parse(event.browser_json || '{}');
-        for (const [domain, seconds] of Object.entries(browserObj)) {
-          if (typeof seconds === 'number') {
-            const safe = seconds < 0 ? 0 : seconds;
-            browserUsageMap[domain] = (browserUsageMap[domain] || 0) + safe;
-          }
-        }
-      } catch {
-        // Ignorar errores de parsing
-      }
-    }
-
-    // Convertir a array de BrowserUsageData
-    const browserUsage: BrowserUsageData[] = Object.entries(browserUsageMap)
-      .map(([domain, seconds]) => ({
-        domain,
-        seconds: seconds < 0 ? 0 : seconds,
-      }))
-      .filter((u) => u.seconds > 0);
-
-    return browserUsage;
   }
 
   /**
@@ -990,146 +774,75 @@ export class RealtimeMetricsService {
   }
 
   /**
-   * Limpia el caché expirado.
-   */
-  clearExpiredCache() {
-    const now = Date.now();
-    for (const [key, value] of this.cache.entries()) {
-      if (value.expires <= now) {
-        this.cache.delete(key);
-      }
-    }
-  }
-
-  /**
-   * Limpia todo el caché.
-   */
-  clearCache() {
-    this.cache.clear();
-  }
-
-  /**
-   * Obtiene el top 5 de mejores rankings de productividad.
+   * Obtiene el top 5 de rankings de productividad (mejores o peores).
+   * Función unificada que combina getTop5BestRanking y getTop5WorstRanking.
    * El caché será manejado por Redis.
+   *
    * @param period Período: 'day' (día actual), 'week' (última semana), 'month' (mes actual)
-   * @returns Top 5 contractors con mejor productividad_score del período
+   * @param order Orden: 'best' (mejores) o 'worst' (peores)
+   * @returns Top 5 contractors según el orden especificado
    */
-  async getTop5BestRanking(
+  async getTopRanking(
     period: 'day' | 'week' | 'month' = 'day',
+    order: 'best' | 'worst' = 'best',
   ): Promise<any[]> {
-    let allMetrics: any[];
+    const cacheKey = RedisKeys.topRanking(period, order);
 
-    if (period === 'day') {
-      // Día actual
-      const today = new Date();
-      allMetrics = await this.getAllRealtimeMetrics(today, undefined);
-    } else {
-      // Semana o mes: calcular rango de fechas
-      const today = new Date();
-      today.setUTCHours(23, 59, 59, 999);
-      let fromDate: Date;
+    return this.redisService.getOrSet(
+      cacheKey,
+      async () => {
+        let allMetrics: any[];
 
-      if (period === 'week') {
-        // Última semana (7 días incluyendo hoy)
-        fromDate = new Date(today);
-        fromDate.setUTCDate(fromDate.getUTCDate() - 6);
-        fromDate.setUTCHours(0, 0, 0, 0);
-      } else {
-        // Mes actual (primer día del mes hasta hoy)
-        fromDate = new Date(today);
-        fromDate.setUTCDate(1);
-        fromDate.setUTCHours(0, 0, 0, 0);
-      }
+        if (period === 'day') {
+          const today = new Date();
+          allMetrics = await this.getAllRealtimeMetrics(today, undefined);
+        } else {
+          const today = new Date();
+          today.setUTCHours(23, 59, 59, 999);
+          let fromDate: Date;
 
-      // ✅ OPTIMIZACIÓN: getAllRealtimeMetricsByDateRange ya devuelve datos agregados
-      // (un registro por contractor con productivity_score calculado como promedio ponderado)
-      // No necesitamos hacer agregación adicional
-      allMetrics = await this.getAllRealtimeMetricsByDateRange(
-        fromDate,
-        today,
-        undefined,
-      );
-    }
+          if (period === 'week') {
+            fromDate = new Date(today);
+            fromDate.setUTCDate(fromDate.getUTCDate() - 6);
+            fromDate.setUTCHours(0, 0, 0, 0);
+          } else {
+            fromDate = new Date(today);
+            fromDate.setUTCDate(1);
+            fromDate.setUTCHours(0, 0, 0, 0);
+          }
 
-    // Ordenar por productivity_score descendente y tomar top 5
-    const sorted = allMetrics
-      .filter(
-        (m) =>
-          m.productivity_score !== null &&
-          m.productivity_score !== undefined &&
-          !isNaN(Number(m.productivity_score)) &&
-          Number(m.productivity_score) > 0,
-      )
-      .sort((a, b) => (b.productivity_score || 0) - (a.productivity_score || 0))
-      .slice(0, 5);
+          allMetrics = await this.getAllRealtimeMetricsByDateRange(
+            fromDate,
+            today,
+            undefined,
+          );
+        }
 
-    this.logger.debug(
-      `getTop5BestRanking(${period}): Found ${sorted.length} contractors from ${allMetrics.length} total`,
+        const sorted = allMetrics
+          .filter(
+            (m) =>
+              m.productivity_score !== null &&
+              m.productivity_score !== undefined &&
+              !isNaN(Number(m.productivity_score)) &&
+              (order === 'best'
+                ? Number(m.productivity_score) > 0
+                : Number(m.productivity_score) >= 0),
+          )
+          .sort((a, b) =>
+            order === 'best'
+              ? (b.productivity_score || 0) - (a.productivity_score || 0)
+              : (a.productivity_score || 0) - (b.productivity_score || 0),
+          )
+          .slice(0, 5);
+
+        this.logger.debug(
+          `getTopRanking(${period}, ${order}): Found ${sorted.length} contractors from ${allMetrics.length} total`,
+        );
+
+        return sorted;
+      },
+      envs.redis.ttl,
     );
-
-    return sorted;
-  }
-
-  /**
-   * Obtiene el top 5 de peores rankings de productividad.
-   * El caché será manejado por Redis.
-   * @param period Período: 'day' (día actual), 'week' (última semana), 'month' (mes actual)
-   * @returns Top 5 contractors con peor productividad_score del período
-   */
-  async getTop5WorstRanking(
-    period: 'day' | 'week' | 'month' = 'day',
-  ): Promise<any[]> {
-    let allMetrics: any[];
-
-    if (period === 'day') {
-      // Día actual
-      const today = new Date();
-      allMetrics = await this.getAllRealtimeMetrics(today, undefined);
-    } else {
-      // Semana o mes: calcular rango de fechas
-      const today = new Date();
-      today.setUTCHours(23, 59, 59, 999);
-      let fromDate: Date;
-
-      if (period === 'week') {
-        // Última semana (7 días incluyendo hoy)
-        fromDate = new Date(today);
-        fromDate.setUTCDate(fromDate.getUTCDate() - 6);
-        fromDate.setUTCHours(0, 0, 0, 0);
-      } else {
-        // Mes actual (primer día del mes hasta hoy)
-        fromDate = new Date(today);
-        fromDate.setUTCDate(1);
-        fromDate.setUTCHours(0, 0, 0, 0);
-      }
-
-      // ✅ OPTIMIZACIÓN: getAllRealtimeMetricsByDateRange ya devuelve datos agregados
-      // (un registro por contractor con productivity_score calculado como promedio ponderado)
-      // No necesitamos hacer agregación adicional
-      allMetrics = await this.getAllRealtimeMetricsByDateRange(
-        fromDate,
-        today,
-        undefined,
-      );
-    }
-
-    // Ordenar por productivity_score ascendente y tomar top 5
-    const sorted = allMetrics
-      .filter(
-        (m) =>
-          m.productivity_score !== null &&
-          m.productivity_score !== undefined &&
-          !isNaN(Number(m.productivity_score)) &&
-          Number(m.productivity_score) >= 0,
-      )
-      .sort((a, b) => (a.productivity_score || 0) - (b.productivity_score || 0))
-      .slice(0, 5);
-
-    this.logger.debug(
-      `getTop5WorstRanking(${period}): Found ${sorted.length} contractors from ${allMetrics.length} total`,
-    );
-
-    return sorted;
   }
 
   /**
@@ -1160,196 +873,192 @@ export class RealtimeMetricsService {
       percentage: number;
     }>;
   }> {
-    const dbName = envs.clickhouse.database;
+    const cacheKey = RedisKeys.activeTalentPercentage(period);
 
-    // Calcular rango de fechas según el período
-    const today = new Date();
-    today.setUTCHours(23, 59, 59, 999);
-    let fromDate: Date;
-    let periodStr: string;
+    return this.redisService.getOrSet(
+      cacheKey,
+      async () => {
+        const dbName = envs.clickhouse.database;
 
-    if (period === 'day') {
-      fromDate = new Date(today);
-      fromDate.setUTCHours(0, 0, 0, 0);
-      periodStr = fromDate.toISOString().split('T')[0];
-    } else if (period === 'week') {
-      fromDate = new Date(today);
-      fromDate.setUTCDate(fromDate.getUTCDate() - 6); // 7 días incluyendo hoy
-      fromDate.setUTCHours(0, 0, 0, 0);
-      periodStr = `${fromDate.toISOString().split('T')[0]} to ${today.toISOString().split('T')[0]}`;
-    } else {
-      // month
-      fromDate = new Date(today);
-      fromDate.setUTCDate(1);
-      fromDate.setUTCHours(0, 0, 0, 0);
-      periodStr = `${fromDate.toISOString().split('T')[0]} to ${today.toISOString().split('T')[0]}`;
-    }
+        const today = new Date();
+        today.setUTCHours(23, 59, 59, 999);
+        let fromDate: Date;
+        let periodStr: string;
 
-    const fromStr = fromDate.toISOString().split('T')[0];
-    const toStr = today.toISOString().split('T')[0];
+        if (period === 'day') {
+          fromDate = new Date(today);
+          fromDate.setUTCHours(0, 0, 0, 0);
+          periodStr = fromDate.toISOString().split('T')[0];
+        } else if (period === 'week') {
+          fromDate = new Date(today);
+          fromDate.setUTCDate(fromDate.getUTCDate() - 6); // 7 días incluyendo hoy
+          fromDate.setUTCHours(0, 0, 0, 0);
+          periodStr = `${fromDate.toISOString().split('T')[0]} to ${today.toISOString().split('T')[0]}`;
+        } else {
+          // month
+          fromDate = new Date(today);
+          fromDate.setUTCDate(1);
+          fromDate.setUTCHours(0, 0, 0, 0);
+          periodStr = `${fromDate.toISOString().split('T')[0]} to ${today.toISOString().split('T')[0]}`;
+        }
 
-    try {
-      // 1. Obtener el total de contractors desde contractor_info_raw
-      const totalContractorsQuery = `
+        const fromStr = fromDate.toISOString().split('T')[0];
+        const toStr = today.toISOString().split('T')[0];
+
+        try {
+          const totalContractorsQuery = `
         SELECT COUNT(DISTINCT contractor_id) AS total
         FROM ${dbName}.contractor_info_raw FINAL
       `;
 
-      const totalResult = await this.clickHouseService.query<{ total: number }>(
-        totalContractorsQuery,
-      );
-      const totalContractors = totalResult[0]?.total || 0;
+          const totalResult = await this.clickHouseService.query<{
+            total: number;
+          }>(totalContractorsQuery);
+          const totalContractors = totalResult[0]?.total || 0;
 
-      if (totalContractors === 0) {
-        const result = {
-          active_percentage: 0,
-          inactive_percentage: 100,
-          total_contractors: 0,
-          active_contractors: 0,
-          inactive_contractors: 0,
-          period: periodStr,
-        };
+          if (totalContractors === 0) {
+            const result = {
+              active_percentage: 0,
+              inactive_percentage: 100,
+              total_contractors: 0,
+              active_contractors: 0,
+              inactive_contractors: 0,
+              period: periodStr,
+            };
 
-        return result;
-      }
+            return result;
+          }
 
-      if (period === 'day') {
-        // Para 'day': lógica simple - % de contractors activos hoy
-        const activeContractorsQuery = `
+          if (period === 'day') {
+            const activeContractorsQuery = `
           SELECT COUNT(DISTINCT contractor_id) AS active
           FROM contractor_activity_15s
           WHERE toDate(beat_timestamp) = '${fromStr}'
         `;
 
-        const activeResult = await this.clickHouseService.query<{
-          active: number;
-        }>(activeContractorsQuery);
-        const activeContractors = activeResult[0]?.active || 0;
+            const activeResult = await this.clickHouseService.query<{
+              active: number;
+            }>(activeContractorsQuery);
+            const activeContractors = activeResult[0]?.active || 0;
 
-        const activePercentage =
-          totalContractors > 0
-            ? Math.round((activeContractors / totalContractors) * 100 * 100) /
-              100
-            : 0;
-        const inactiveContractors = totalContractors - activeContractors;
-        const inactivePercentage =
-          totalContractors > 0
-            ? Math.round((inactiveContractors / totalContractors) * 100 * 100) /
-              100
-            : 100;
+            const activePercentage =
+              totalContractors > 0
+                ? Math.round(
+                    (activeContractors / totalContractors) * 100 * 100,
+                  ) / 100
+                : 0;
+            const inactiveContractors = totalContractors - activeContractors;
+            const inactivePercentage =
+              totalContractors > 0
+                ? Math.round(
+                    (inactiveContractors / totalContractors) * 100 * 100,
+                  ) / 100
+                : 100;
 
-        const result = {
-          active_percentage: activePercentage,
-          inactive_percentage: inactivePercentage,
-          total_contractors: totalContractors,
-          active_contractors: activeContractors,
-          inactive_contractors: inactiveContractors,
-          period: periodStr,
-        };
+            const result = {
+              active_percentage: activePercentage,
+              inactive_percentage: inactivePercentage,
+              total_contractors: totalContractors,
+              active_contractors: activeContractors,
+              inactive_contractors: inactiveContractors,
+              period: periodStr,
+            };
 
-        this.logger.debug(
-          `Active talent percentage for ${period}: ${activePercentage}% (${activeContractors}/${totalContractors})`,
-        );
+            this.logger.debug(
+              `Active talent percentage for ${period}: ${activePercentage}% (${activeContractors}/${totalContractors})`,
+            );
 
-        return result;
-      }
+            return result;
+          }
 
-      // Para 'week' y 'month': calcular PROMEDIO de asistencia diaria
-      // 2. Obtener contractors activos POR DÍA en el período
-      const dailyActiveQuery = `
+          // Para 'week' y 'month': obtener datos y calcular todo en SQL
+          // Query optimizada que genera todas las fechas del rango y calcula porcentajes
+          const dailyBreakdownQuery = `
+        WITH 
+          toDate('${fromStr}') AS start_date,
+          toDate('${toStr}') AS end_date,
+          dateDiff('day', start_date, end_date) + 1 AS total_days,
+          ${totalContractors} AS total_contractors
         SELECT 
-          toDate(beat_timestamp) AS day,
-          COUNT(DISTINCT contractor_id) AS active_count
-        FROM contractor_activity_15s
-        WHERE toDate(beat_timestamp) >= '${fromStr}'
-          AND toDate(beat_timestamp) <= '${toStr}'
-        GROUP BY day
+          toString(day) AS date,
+          active_count AS active,
+          round(active_count * 100.0 / total_contractors, 2) AS percentage
+        FROM (
+          SELECT 
+            arrayJoin(arrayMap(x -> addDays(start_date, x), range(toUInt32(total_days)))) AS day
+        ) dates
+        LEFT JOIN (
+          SELECT 
+            toDate(beat_timestamp) AS activity_day,
+            COUNT(DISTINCT contractor_id) AS active_count
+          FROM contractor_activity_15s
+          WHERE toDate(beat_timestamp) >= '${fromStr}'
+            AND toDate(beat_timestamp) <= '${toStr}'
+          GROUP BY activity_day
+        ) activity ON dates.day = activity.activity_day
         ORDER BY day
       `;
 
-      const dailyResults = await this.clickHouseService.query<{
-        day: string;
-        active_count: number;
-      }>(dailyActiveQuery);
+          const dailyBreakdown = await this.clickHouseService.query<{
+            date: string;
+            active: number;
+            percentage: number;
+          }>(dailyBreakdownQuery);
 
-      // Calcular el número de días en el período
-      const daysDiff =
-        Math.ceil(
-          (today.getTime() - fromDate.getTime()) / (1000 * 60 * 60 * 24),
-        ) + 1;
+          // Formatear fechas y asegurar valores numéricos
+          const formattedBreakdown = dailyBreakdown.map((row) => ({
+            date:
+              typeof row.date === 'string' ? row.date.split('T')[0] : row.date,
+            active: Number(row.active) || 0,
+            percentage: Number(row.percentage) || 0,
+          }));
 
-      // Crear mapa de días con actividad
-      const dailyMap = new Map<string, number>();
-      for (const row of dailyResults) {
-        // Normalizar fecha a string YYYY-MM-DD
-        const dayStr =
-          typeof row.day === 'string'
-            ? row.day.split('T')[0]
-            : new Date(row.day).toISOString().split('T')[0];
-        dailyMap.set(dayStr, Number(row.active_count) || 0);
-      }
+          // Calcular promedios desde los resultados
+          const daysDiff = formattedBreakdown.length;
+          const totalActiveSum = formattedBreakdown.reduce(
+            (sum, d) => sum + d.active,
+            0,
+          );
+          const totalPercentageSum = formattedBreakdown.reduce(
+            (sum, d) => sum + d.percentage,
+            0,
+          );
 
-      // Calcular promedio de asistencia diaria
-      // Incluir días sin actividad como 0
-      let totalDailyPercentages = 0;
-      const dailyBreakdown: Array<{
-        date: string;
-        active: number;
-        percentage: number;
-      }> = [];
+          const avgActivePercentage =
+            daysDiff > 0
+              ? Math.round((totalPercentageSum / daysDiff) * 100) / 100
+              : 0;
+          const avgInactivePercentage =
+            Math.round((100 - avgActivePercentage) * 100) / 100;
 
-      for (
-        let d = new Date(fromDate);
-        d <= today;
-        d.setUTCDate(d.getUTCDate() + 1)
-      ) {
-        const dayStr = d.toISOString().split('T')[0];
-        const activeOnDay = dailyMap.get(dayStr) || 0;
-        const percentageOnDay =
-          totalContractors > 0 ? (activeOnDay / totalContractors) * 100 : 0;
-        totalDailyPercentages += percentageOnDay;
-        dailyBreakdown.push({
-          date: dayStr,
-          active: activeOnDay,
-          percentage: Math.round(percentageOnDay * 100) / 100,
-        });
-      }
+          const avgActiveContractors =
+            daysDiff > 0 ? Math.round(totalActiveSum / daysDiff) : 0;
+          const avgInactiveContractors =
+            totalContractors - avgActiveContractors;
 
-      // Promedio de porcentajes diarios
-      const avgActivePercentage =
-        daysDiff > 0
-          ? Math.round((totalDailyPercentages / daysDiff) * 100) / 100
-          : 0;
-      const avgInactivePercentage =
-        Math.round((100 - avgActivePercentage) * 100) / 100;
+          const result = {
+            active_percentage: avgActivePercentage,
+            inactive_percentage: avgInactivePercentage,
+            total_contractors: totalContractors,
+            active_contractors: avgActiveContractors,
+            inactive_contractors: avgInactiveContractors,
+            period: periodStr,
+            daily_breakdown: formattedBreakdown,
+          };
 
-      // Para los contadores, usar el promedio de contractors activos por día
-      const avgActiveContractors =
-        daysDiff > 0
-          ? Math.round(
-              dailyBreakdown.reduce((sum, d) => sum + d.active, 0) / daysDiff,
-            )
-          : 0;
-      const avgInactiveContractors = totalContractors - avgActiveContractors;
+          this.logger.debug(
+            `Active talent percentage for ${period}: ${avgActivePercentage}% avg over ${daysDiff} days`,
+          );
 
-      const result = {
-        active_percentage: avgActivePercentage,
-        inactive_percentage: avgInactivePercentage,
-        total_contractors: totalContractors,
-        active_contractors: avgActiveContractors,
-        inactive_contractors: avgInactiveContractors,
-        period: periodStr,
-        daily_breakdown: dailyBreakdown,
-      };
-
-      this.logger.debug(
-        `Active talent percentage for ${period}: ${avgActivePercentage}% avg over ${daysDiff} days (breakdown: ${dailyBreakdown.map((d) => `${d.date}:${d.percentage}%`).join(', ')})`,
-      );
-
-      return result;
-    } catch (error) {
-      this.logger.error(`Error calculating active talent percentage: ${error}`);
-      throw error;
-    }
+          return result;
+        } catch (error) {
+          this.logger.error(
+            `Error calculating active talent percentage: ${error}`,
+          );
+          throw error;
+        }
+      },
+      envs.redis.ttl,
+    );
   }
 }
