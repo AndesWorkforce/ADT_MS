@@ -22,6 +22,12 @@ interface EnvVars {
   REDIS_TTL: number;
   REDIS_MAX_RETRIES: number;
   REDIS_RETRY_DELAY: number;
+  // Variables para BullMQ (colas)
+  REDIS_QUEUE_DB: number;
+  USE_EVENT_QUEUE: boolean;
+  USE_SESSION_QUEUE: boolean;
+  USE_CONTRACTOR_QUEUE: boolean;
+  USE_ETL_QUEUE: boolean;
 }
 
 export const envSchema = Joi.object({
@@ -53,6 +59,33 @@ export const envSchema = Joi.object({
   REDIS_TTL: Joi.number().default(3600),
   REDIS_MAX_RETRIES: Joi.number().default(3),
   REDIS_RETRY_DELAY: Joi.number().default(1000),
+  // Variables para BullMQ (colas) - DB separada para evitar conflictos con caché
+  REDIS_QUEUE_DB: Joi.number().default(1),
+  // Feature flags para activar/desactivar colas de forma controlada
+  USE_EVENT_QUEUE: Joi.boolean()
+    .truthy('true')
+    .truthy('1')
+    .falsy('false')
+    .falsy('0')
+    .default(false),
+  USE_SESSION_QUEUE: Joi.boolean()
+    .truthy('true')
+    .truthy('1')
+    .falsy('false')
+    .falsy('0')
+    .default(false),
+  USE_CONTRACTOR_QUEUE: Joi.boolean()
+    .truthy('true')
+    .truthy('1')
+    .falsy('false')
+    .falsy('0')
+    .default(false),
+  USE_ETL_QUEUE: Joi.boolean()
+    .truthy('true')
+    .truthy('1')
+    .falsy('false')
+    .falsy('0')
+    .default(false),
 }).unknown(true);
 
 const { error, value } = envSchema.validate(process.env);
@@ -86,6 +119,14 @@ export const envs = {
     ttl: envVars.REDIS_TTL,
     maxRetries: envVars.REDIS_MAX_RETRIES,
     retryDelay: envVars.REDIS_RETRY_DELAY,
+  },
+  // Configuración de colas con BullMQ
+  queues: {
+    redisDb: envVars.REDIS_QUEUE_DB,
+    useEventQueue: envVars.USE_EVENT_QUEUE,
+    useSessionQueue: envVars.USE_SESSION_QUEUE,
+    useContractorQueue: envVars.USE_CONTRACTOR_QUEUE,
+    useEtlQueue: envVars.USE_ETL_QUEUE,
   },
 };
 
