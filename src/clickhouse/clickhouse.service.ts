@@ -330,6 +330,19 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Insertar múltiples registros de forma masiva (batch insert)
+   * Alias para `insert` que acepta arrays - más eficiente para múltiples registros
+   *
+   * @param table - Nombre de la tabla
+   * @param dataArray - Array de objetos a insertar
+   */
+  async insertBatch(table: string, dataArray: any[]): Promise<void> {
+    // insertBatch es simplemente un alias de insert cuando recibe un array
+    // El método insert ya maneja arrays de forma eficiente
+    return this.insert(table, dataArray);
+  }
+
+  /**
    * Verificar si una tabla existe
    */
   async tableExists(table: string): Promise<boolean> {
