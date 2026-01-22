@@ -1,22 +1,21 @@
 import { Controller, Logger } from '@nestjs/common';
 import { EventPattern, Payload } from '@nestjs/microservices';
 
-import { getMessagePattern, logError } from 'config';
+import { getMessagePattern, logError, envs } from 'config';
 
 import { RawService } from '../raw/raw.service';
 import { EventRawDto } from '../raw/dto/event-raw.dto';
+import { EventQueueService } from '../queues/services';
 
 @Controller()
 export class EventsListener {
   private readonly logger = new Logger(EventsListener.name);
 
-  constructor(private readonly rawService: RawService) {}
+  constructor(
+    private readonly rawService: RawService,
+    private readonly eventQueueService: EventQueueService,
+  ) {}
 
-  /**
-   * Escuchar event.created de EVENTS_MS
-   * Este evento se emite después de que un evento se crea exitosamente en la base de datos
-   * e incluye el ID real del evento
-   */
   @EventPattern(getMessagePattern('event.created'))
   async handleEventCreated(@Payload() event: any): Promise<void> {
     try {
@@ -35,23 +34,37 @@ export class EventsListener {
         session_id: event.session_id || null,
         agent_session_id: event.agent_session_id || null,
         timestamp: event.timestamp ? new Date(event.timestamp) : new Date(),
-        payload: typeof event.payload === 'string' 
-          ? event.payload 
-          : JSON.stringify(event.payload || {}),
+        payload:
+          typeof event.payload === 'string'
+            ? event.payload
+            : JSON.stringify(event.payload || {}),
         created_at: event.created_at ? new Date(event.created_at) : new Date(),
       };
 
-      await this.rawService.saveEvent(eventRaw);
-      
-      // Solo log en debug para reducir ruido
-      this.logger.debug(
-        `✅ EventsListener: Event processed - Event ID: ${eventRaw.event_id}, Contractor: ${eventRaw.contractor_id}`,
-      );
+      if (envs.queues.useEventQueue) {
+        await this.eventQueueService.addEvent({
+          event_id: eventRaw.event_id,
+          contractor_id: eventRaw.contractor_id,
+          agent_id: eventRaw.agent_id,
+          session_id: eventRaw.session_id,
+          agent_session_id: eventRaw.agent_session_id,
+          timestamp: eventRaw.timestamp,
+          payload: eventRaw.payload,
+          created_at: eventRaw.created_at,
+        });
+
+        this.logger.debug(
+          `📬 Event queued - Event ID: ${eventRaw.event_id}, Contractor: ${eventRaw.contractor_id}`,
+        );
+      } else {
+        await this.rawService.saveEvent(eventRaw);
+
+        this.logger.debug(
+          `✅ Event processed (direct) - Event ID: ${eventRaw.event_id}, Contractor: ${eventRaw.contractor_id}`,
+        );
+      }
     } catch (error) {
       logError(this.logger, 'Error processing event.created', error);
-      // No lanzar - no queremos romper el flujo de eventos
-      // Registrar el error y continuar
     }
   }
 }
-
