@@ -64,28 +64,163 @@ export class DimensionsInitService implements OnModuleInit {
 
   /**
    * Pobla apps_dimension con valores por defecto.
+   * NOTA: Este método ya no se usa si las apps vienen de Prisma.
+   * Se mantiene solo como fallback si no hay apps en Prisma.
    */
   private async populateAppsDimension(): Promise<void> {
+    // Generar IDs temporales para apps por defecto
+    const generateId = () =>
+      `default-${Math.random().toString(36).substring(2, 15)}`;
+    const now = new Date();
+
     const apps: AppDimensionDto[] = [
       // Productivas
-      { app_name: 'Code', category: 'productive', weight: 1.2 },
-      { app_name: 'Visual Studio Code', category: 'productive', weight: 1.2 },
-      { app_name: 'IntelliJ', category: 'productive', weight: 1.2 },
-      { app_name: 'Word', category: 'productive', weight: 1.0 },
-      { app_name: 'Excel', category: 'productive', weight: 1.0 },
-      { app_name: 'PowerPoint', category: 'productive', weight: 1.0 },
-      { app_name: 'Notion', category: 'productive', weight: 1.0 },
+      {
+        id: generateId(),
+        name: 'Code',
+        category: 'productive',
+        type: 'Code',
+        weight: 1.2,
+        created_at: now,
+        updated_at: now,
+      },
+      {
+        id: generateId(),
+        name: 'Visual Studio Code',
+        category: 'productive',
+        type: 'Code',
+        weight: 1.2,
+        created_at: now,
+        updated_at: now,
+      },
+      {
+        id: generateId(),
+        name: 'IntelliJ',
+        category: 'productive',
+        type: 'Code',
+        weight: 1.2,
+        created_at: now,
+        updated_at: now,
+      },
+      {
+        id: generateId(),
+        name: 'Word',
+        category: 'productive',
+        type: 'Office',
+        weight: 1.0,
+        created_at: now,
+        updated_at: now,
+      },
+      {
+        id: generateId(),
+        name: 'Excel',
+        category: 'productive',
+        type: 'Office',
+        weight: 1.0,
+        created_at: now,
+        updated_at: now,
+      },
+      {
+        id: generateId(),
+        name: 'PowerPoint',
+        category: 'productive',
+        type: 'Office',
+        weight: 1.0,
+        created_at: now,
+        updated_at: now,
+      },
+      {
+        id: generateId(),
+        name: 'Notion',
+        category: 'productive',
+        type: 'Productivity',
+        weight: 1.0,
+        created_at: now,
+        updated_at: now,
+      },
       // Neutras
-      { app_name: 'Slack', category: 'neutral', weight: 0.8 },
-      { app_name: 'Teams', category: 'neutral', weight: 0.8 },
-      { app_name: 'Chrome', category: 'neutral', weight: 0.6 },
-      { app_name: 'Edge', category: 'neutral', weight: 0.6 },
-      { app_name: 'Firefox', category: 'neutral', weight: 0.6 },
+      {
+        id: generateId(),
+        name: 'Slack',
+        category: 'neutral',
+        type: 'Chat',
+        weight: 0.8,
+        created_at: now,
+        updated_at: now,
+      },
+      {
+        id: generateId(),
+        name: 'Teams',
+        category: 'neutral',
+        type: 'Chat',
+        weight: 0.8,
+        created_at: now,
+        updated_at: now,
+      },
+      {
+        id: generateId(),
+        name: 'Chrome',
+        category: 'neutral',
+        type: 'Web',
+        weight: 0.6,
+        created_at: now,
+        updated_at: now,
+      },
+      {
+        id: generateId(),
+        name: 'Edge',
+        category: 'neutral',
+        type: 'Web',
+        weight: 0.6,
+        created_at: now,
+        updated_at: now,
+      },
+      {
+        id: generateId(),
+        name: 'Firefox',
+        category: 'neutral',
+        type: 'Web',
+        weight: 0.6,
+        created_at: now,
+        updated_at: now,
+      },
       // No productivas
-      { app_name: 'YouTube', category: 'non_productive', weight: 0.2 },
-      { app_name: 'Spotify', category: 'non_productive', weight: 0.3 },
-      { app_name: 'Discord', category: 'non_productive', weight: 0.4 },
-      { app_name: 'Games', category: 'non_productive', weight: 0.1 },
+      {
+        id: generateId(),
+        name: 'YouTube',
+        category: 'non_productive',
+        type: 'Entertainment',
+        weight: 0.2,
+        created_at: now,
+        updated_at: now,
+      },
+      {
+        id: generateId(),
+        name: 'Spotify',
+        category: 'non_productive',
+        type: 'Entertainment',
+        weight: 0.3,
+        created_at: now,
+        updated_at: now,
+      },
+      {
+        id: generateId(),
+        name: 'Discord',
+        category: 'non_productive',
+        type: 'Chat',
+        weight: 0.4,
+        created_at: now,
+        updated_at: now,
+      },
+      {
+        id: generateId(),
+        name: 'Games',
+        category: 'non_productive',
+        type: 'Entertainment',
+        weight: 0.1,
+        created_at: now,
+        updated_at: now,
+      },
     ];
 
     try {

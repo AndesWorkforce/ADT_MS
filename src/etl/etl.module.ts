@@ -4,6 +4,7 @@ import { ClickHouseModule } from '../clickhouse/clickhouse.module';
 // Services
 import { ActivityService } from './services/activity.service';
 import { AppUsageService } from './services/app-usage.service';
+import { AppsSyncService } from './services/apps-sync.service';
 import { DailyMetricsService } from './services/daily-metrics.service';
 import { DimensionsInitService } from './services/dimensions-init.service';
 import { DimensionsService } from './services/dimensions.service';
@@ -22,6 +23,7 @@ import { EventsToActivityTransformer } from './transformers/events-to-activity.t
   providers: [
     ActivityService,
     AppUsageService,
+    AppsSyncService,
     DailyMetricsService,
     RankingService,
     SessionSummariesService,
@@ -37,6 +39,7 @@ import { EventsToActivityTransformer } from './transformers/events-to-activity.t
   exports: [
     ActivityService,
     AppUsageService,
+    AppsSyncService,
     DailyMetricsService,
     RankingService,
     SessionSummariesService,

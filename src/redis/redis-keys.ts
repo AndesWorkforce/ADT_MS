@@ -154,4 +154,32 @@ export class RedisKeys {
     const limitStr = limit || 10;
     return `${this.NAMESPACE}:ranking:${workdayStr}:limit:${limitStr}`;
   }
+
+  static hourlyActivityByContractor(
+    contractorId: string,
+    from?: string,
+    to?: string,
+    days?: number,
+  ): string {
+    if (from && to) {
+      const fromDate = from.split('T')[0];
+      const toDate = to.split('T')[0];
+      return `${this.NAMESPACE}:hourly-activity:contractor:${contractorId}:range:${fromDate}:${toDate}`;
+    }
+    return `${this.NAMESPACE}:hourly-activity:contractor:${contractorId}:days:${days || 30}`;
+  }
+
+  static hourlyProductivityByContractor(
+    contractorId: string,
+    from?: string,
+    to?: string,
+    days?: number,
+  ): string {
+    if (from && to) {
+      const fromDate = from.split('T')[0];
+      const toDate = to.split('T')[0];
+      return `${this.NAMESPACE}:hourly-productivity:contractor:${contractorId}:range:${fromDate}:${toDate}`;
+    }
+    return `${this.NAMESPACE}:hourly-productivity:contractor:${contractorId}:days:${days || 30}`;
+  }
 }

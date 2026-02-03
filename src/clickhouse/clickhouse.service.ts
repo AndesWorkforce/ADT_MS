@@ -595,17 +595,99 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
     const dbName = envs.clickhouse.database;
 
     try {
-      // Crear tabla apps_dimension
+      // Crear tabla apps_dimension (sincronizada con Prisma apps)
       await this.command(`
         CREATE TABLE IF NOT EXISTS ${dbName}.apps_dimension (
-          app_name String,
-          category String,
-          weight Float64,
-          created_at DateTime DEFAULT now()
+          id String,
+          name String,
+          category Nullable(String),
+          type Nullable(String),
+          weight Nullable(Float64) DEFAULT 0.5,
+          created_at DateTime DEFAULT now(),
+          updated_at DateTime DEFAULT now()
         ) ENGINE = MergeTree()
-        ORDER BY app_name
+        ORDER BY id
       `);
       this.logger.log('✅ Table apps_dimension verified/created');
+
+      // Migración: verificar si existe app_name y agregar columna name
+      try {
+        // Verificar si existe la columna app_name
+        const appNameColumn = await this.query<{ name: string }>(`
+          SELECT name 
+          FROM system.columns 
+          WHERE database = '${dbName}' 
+            AND table = 'apps_dimension' 
+            AND name = 'app_name'
+        `);
+
+        if (appNameColumn.length > 0) {
+          // Existe app_name, necesitamos agregar name y copiar datos
+          this.logger.log('🔄 Found app_name column, adding name column...');
+
+          // Asegurar que name existe
+          await this.command(`
+            ALTER TABLE ${dbName}.apps_dimension 
+            ADD COLUMN IF NOT EXISTS name String
+          `);
+
+          this.logger.warn(
+            '⚠️ Column app_name detected. Please run the migration script: ADT_MS/scripts/migrate-app-name-to-name.sql ' +
+              'to migrate app_name to name and assign types to existing apps.',
+          );
+        } else {
+          // No existe app_name, solo asegurar que name existe
+          await this.command(`
+            ALTER TABLE ${dbName}.apps_dimension 
+            ADD COLUMN IF NOT EXISTS name String
+          `);
+          this.logger.log('✅ Column name verified/added to apps_dimension');
+        }
+      } catch {
+        // Ignorar si hay errores (columna ya existe o tabla nueva)
+        this.logger.debug('Column name migration skipped or already exists');
+      }
+
+      // Migración: agregar columna id si no existe (para tablas existentes)
+      try {
+        await this.command(`
+          ALTER TABLE ${dbName}.apps_dimension 
+          ADD COLUMN IF NOT EXISTS id String
+        `);
+        this.logger.log('✅ Column id verified/added to apps_dimension');
+      } catch {
+        // Ignorar si la columna ya existe o si hay otros errores
+        this.logger.debug(
+          'Column id already exists in apps_dimension or migration skipped',
+        );
+      }
+
+      // Migración: agregar columnas category, type, weight, updated_at si no existen
+      try {
+        await this.command(`
+          ALTER TABLE ${dbName}.apps_dimension 
+          ADD COLUMN IF NOT EXISTS category Nullable(String)
+        `);
+        await this.command(`
+          ALTER TABLE ${dbName}.apps_dimension 
+          ADD COLUMN IF NOT EXISTS type Nullable(String)
+        `);
+        await this.command(`
+          ALTER TABLE ${dbName}.apps_dimension 
+          ADD COLUMN IF NOT EXISTS weight Nullable(Float64) DEFAULT 0.5
+        `);
+        await this.command(`
+          ALTER TABLE ${dbName}.apps_dimension 
+          ADD COLUMN IF NOT EXISTS updated_at DateTime DEFAULT now()
+        `);
+        this.logger.log(
+          '✅ Columns category, type, weight, updated_at verified/added to apps_dimension',
+        );
+      } catch {
+        this.logger.debug(
+          'Columns category/type/weight/updated_at already exist in apps_dimension or migration skipped',
+        );
+      }
 
       // Crear tabla domains_dimension
       await this.command(`
