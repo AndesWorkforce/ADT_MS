@@ -5,7 +5,9 @@ import { getMessagePattern, logError } from 'config';
 
 import { ActivityService } from '../etl/services/activity.service';
 import { AppUsageService } from '../etl/services/app-usage.service';
+import { AppsSyncService } from '../etl/services/apps-sync.service';
 import { DailyMetricsService } from '../etl/services/daily-metrics.service';
+import { AppType } from '../etl/dto/app-dimension.dto';
 import { EtlService } from '../etl/services/etl.service';
 import { RankingService } from '../etl/services/ranking.service';
 import { RealtimeMetricsService } from '../etl/services/realtime-metrics.service';
@@ -33,6 +35,8 @@ export class AdtListener {
     private readonly realtimeMetricsService: RealtimeMetricsService,
     // Servicios ETL
     private readonly etlService: EtlService,
+    // Servicios de sincronización
+    private readonly appsSyncService: AppsSyncService,
   ) {}
 
   // ============================================================================
@@ -79,6 +83,197 @@ export class AdtListener {
       );
     } catch (error) {
       logError(this.logger, 'Error in getSessionSummaries', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Obtiene resúmenes de sesión de un contractor agrupados por día.
+   * Puede filtrar por rango de fechas (from/to) o por días hacia atrás (days).
+   */
+  @MessagePattern(getMessagePattern('adt.getSessionSummariesByDay'))
+  async getSessionSummariesByDay(
+    @Payload()
+    data: {
+      contractorId: string;
+      from?: string;
+      to?: string;
+      days?: number;
+    },
+  ) {
+    try {
+      const { contractorId, from, to, days = 30 } = data;
+      return await this.sessionSummariesService.getSessionSummariesByDay(
+        contractorId,
+        from,
+        to,
+        days,
+      );
+    } catch (error) {
+      logError(this.logger, 'Error in getSessionSummariesByDay', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Obtiene duración de actividad por hora para un contractor.
+   * Útil para gráficos de duración horaria durante la jornada laboral.
+   */
+  @MessagePattern(getMessagePattern('adt.getHourlyActivity'))
+  async getHourlyActivity(
+    @Payload()
+    data: {
+      contractorId: string;
+      from?: string;
+      to?: string;
+      days?: number;
+      startHour?: number;
+      endHour?: number;
+    },
+  ) {
+    try {
+      const {
+        contractorId,
+        from,
+        to,
+        days = 30,
+        startHour = 8,
+        endHour = 17,
+      } = data;
+      return await this.sessionSummariesService.getHourlyActivity(
+        contractorId,
+        from,
+        to,
+        days,
+        startHour,
+        endHour,
+      );
+    } catch (error) {
+      logError(this.logger, 'Error in getHourlyActivity', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Obtiene duración REAL de sesiones por hora para un contractor.
+   * Calcula cuánto tiempo de sesión hubo activo DURANTE cada hora específica.
+   * Si una sesión cruza varias horas, cada hora muestra solo la porción correspondiente.
+   */
+  @MessagePattern(getMessagePattern('adt.getHourlySessionDuration'))
+  async getHourlySessionDuration(
+    @Payload()
+    data: {
+      contractorId: string;
+      from?: string;
+      to?: string;
+      days?: number;
+      startHour?: number;
+      endHour?: number;
+    },
+  ) {
+    try {
+      const {
+        contractorId,
+        from,
+        to,
+        days = 30,
+        startHour = 8,
+        endHour = 17,
+      } = data;
+      return await this.sessionSummariesService.getHourlySessionDuration(
+        contractorId,
+        from,
+        to,
+        days,
+        startHour,
+        endHour,
+      );
+    } catch (error) {
+      logError(this.logger, 'Error in getHourlySessionDuration', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Obtiene productividad promedio por hora para un contractor.
+   * Usa la misma fórmula del ETL con apps y browser (opción B).
+   */
+  @MessagePattern(getMessagePattern('adt.getHourlyProductivity'))
+  async getHourlyProductivity(
+    @Payload()
+    data: {
+      contractorId: string;
+      from?: string;
+      to?: string;
+      days?: number;
+      startHour?: number;
+      endHour?: number;
+    },
+  ) {
+    try {
+      const {
+        contractorId,
+        from,
+        to,
+        days = 30,
+        startHour = 8,
+        endHour = 17,
+      } = data;
+      return await this.sessionSummariesService.getHourlyProductivity(
+        contractorId,
+        from,
+        to,
+        days,
+        startHour,
+        endHour,
+      );
+    } catch (error) {
+      logError(this.logger, 'Error in getHourlyProductivity', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Obtiene la duración promedio de sesiones agrupada dinámicamente.
+   * - Sin cliente: Agrupa por cliente
+   * - Con cliente: Agrupa por equipo
+   * - Con cliente + equipo: Agrupa por contratista individual
+   * - Con cliente + equipo + job: Igual, filtrado por job position
+   */
+  @MessagePattern(getMessagePattern('adt.getGroupedAvgSessionDuration'))
+  async getGroupedAvgSessionDuration(
+    @Payload()
+    data: {
+      from?: string;
+      to?: string;
+      clientId?: string;
+      teamId?: string;
+      jobPosition?: string;
+      country?: string;
+      days?: number;
+    },
+  ) {
+    try {
+      const {
+        from,
+        to,
+        clientId,
+        teamId,
+        jobPosition,
+        country,
+        days = 30,
+      } = data;
+      return await this.sessionSummariesService.getGroupedAvgSessionDuration(
+        from,
+        to,
+        clientId,
+        teamId,
+        jobPosition,
+        country,
+        days,
+      );
+    } catch (error) {
+      logError(this.logger, 'Error in getGroupedAvgSessionDuration', error);
       throw error;
     }
   }
@@ -411,6 +606,85 @@ export class AdtListener {
       };
     } catch (error) {
       logError(this.logger, 'Error in processSessionSummaries', error);
+      throw error;
+    }
+  }
+
+  // ============================================================================
+  // ENDPOINTS DE SINCRONIZACIÓN - Apps desde USER_MS
+  // ============================================================================
+
+  /**
+   * Sincroniza una aplicación desde USER_MS a ClickHouse.
+   * Se llama cuando se crea o actualiza una app en Prisma.
+   */
+  @MessagePattern(getMessagePattern('adt.syncApp'))
+  async syncApp(
+    @Payload()
+    app: {
+      id: string;
+      name: string;
+      category?: string | null;
+      type?: AppType | null;
+      weight?: number | null;
+      created_at: Date;
+      updated_at: Date;
+    },
+  ) {
+    try {
+      await this.appsSyncService.syncApp(app);
+      return {
+        message: 'App synchronized successfully',
+        appId: app.id,
+      };
+    } catch (error) {
+      logError(this.logger, 'Error in syncApp', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Elimina una aplicación de ClickHouse cuando se elimina en Prisma.
+   */
+  @MessagePattern(getMessagePattern('adt.deleteApp'))
+  async deleteApp(@Payload() appId: string) {
+    try {
+      await this.appsSyncService.deleteApp(appId);
+      return {
+        message: 'App deleted successfully',
+        appId,
+      };
+    } catch (error) {
+      logError(this.logger, 'Error in deleteApp', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Sincroniza todas las apps desde USER_MS a ClickHouse.
+   * Útil para sincronización inicial o resincronización completa.
+   */
+  @MessagePattern(getMessagePattern('adt.syncAllApps'))
+  async syncAllApps(
+    @Payload()
+    apps: Array<{
+      id: string;
+      name: string;
+      category?: string | null;
+      type?: string | null;
+      weight?: number | null;
+      created_at: Date;
+      updated_at: Date;
+    }>,
+  ) {
+    try {
+      await this.appsSyncService.syncAllApps(apps);
+      return {
+        message: 'All apps synchronized successfully',
+        count: apps.length,
+      };
+    } catch (error) {
+      logError(this.logger, 'Error in syncAllApps', error);
       throw error;
     }
   }

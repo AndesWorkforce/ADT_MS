@@ -312,10 +312,13 @@ export class UsageDataService {
         seconds: number;
       }>(query);
 
-      return results.map((r) => ({
-        appName: r.appName,
-        seconds: Number(r.seconds) || 0,
-      }));
+      return results.map((r) => {
+        const seconds = Number(r.seconds);
+        return {
+          appName: r.appName,
+          seconds: isNaN(seconds) || !isFinite(seconds) ? 0 : seconds,
+        };
+      });
     } catch (error) {
       this.logger.warn(
         `Error getting aggregated AppUsage: ${error.message}. Returning empty array.`,
@@ -362,10 +365,13 @@ export class UsageDataService {
         seconds: number;
       }>(query);
 
-      return results.map((r) => ({
-        domain: r.domain,
-        seconds: Number(r.seconds) || 0,
-      }));
+      return results.map((r) => {
+        const seconds = Number(r.seconds);
+        return {
+          domain: r.domain,
+          seconds: isNaN(seconds) || !isFinite(seconds) ? 0 : seconds,
+        };
+      });
     } catch (error) {
       this.logger.warn(
         `Error getting aggregated Browser usage: ${error.message}. Returning empty array.`,
@@ -428,9 +434,10 @@ export class UsageDataService {
       results.forEach((row) => {
         const existing = usageMap.get(row.contractor_id);
         if (existing) {
+          const seconds = Number(row.seconds);
           existing.push({
             appName: row.appName,
-            seconds: Number(row.seconds) || 0,
+            seconds: isNaN(seconds) || !isFinite(seconds) ? 0 : seconds,
           });
         }
       });
@@ -501,9 +508,10 @@ export class UsageDataService {
       results.forEach((row) => {
         const existing = usageMap.get(row.contractor_id);
         if (existing) {
+          const seconds = Number(row.seconds);
           existing.push({
             domain: row.domain,
-            seconds: Number(row.seconds) || 0,
+            seconds: isNaN(seconds) || !isFinite(seconds) ? 0 : seconds,
           });
         }
       });

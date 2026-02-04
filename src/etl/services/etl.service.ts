@@ -196,6 +196,7 @@ export class EtlService {
         FROM events_raw
         WHERE 1=1
         ${filters}
+        SETTINGS max_partitions_per_insert_block=1000
       `;
 
       await this.clickHouseService.command(insertQuery);
@@ -376,7 +377,7 @@ export class EtlService {
             sum(JSONExtractFloat(payload, 'AppUsage', app)) AS total_seconds
           FROM events_raw
           ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app
-          LEFT JOIN apps_dimension d ON d.app_name = app
+          LEFT JOIN apps_dimension d ON d.name = app
           WHERE toDate(timestamp) = toDate('${dayStr}')
           GROUP BY contractor_id, workday
         ) app ON app.contractor_id = a.contractor_id AND app.workday = a.workday
@@ -515,7 +516,7 @@ export class EtlService {
             sum(JSONExtractFloat(e.payload, 'AppUsage', app)) AS total_seconds
           FROM events_raw e
           ARRAY JOIN JSONExtractKeys(e.payload, 'AppUsage') AS app
-          LEFT JOIN apps_dimension d ON d.app_name = app
+          LEFT JOIN apps_dimension d ON d.name = app
           GROUP BY e.session_id
         ) app ON app.session_id = a.session_id
         LEFT JOIN (
@@ -557,6 +558,7 @@ export class EtlService {
         ) web ON web.session_id = a.session_id
         ${sessionFilter}
         GROUP BY a.session_id
+        SETTINGS max_partitions_per_insert_block=1000
       `;
 
       await this.clickHouseService.command(insertQuery);

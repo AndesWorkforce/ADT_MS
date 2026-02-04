@@ -2,13 +2,13 @@
  * Script para poblar ClickHouse con datos de prueba
  *
  * Genera:
- * - 30 contratistas
- * - 2 meses de datos (desde 2 meses atrás hasta hoy)
+ * - 100 contratistas
+ * - Datos desde 01/10/2025 hasta 10/02/2026
  * - ~8 horas de trabajo por día por contratista
- * - Eventos distribuidos en sesiones a lo largo del día
- * - 10 muy productivos (80-90%)
- * - 10 medianamente productivos (60-75%)
- * - 10 poco productivos (30-50%)
+ * - Eventos distribuidos en sesiones a lo largo del día (8:00-17:00)
+ * - 34 muy productivos (80-90%)
+ * - 33 medianamente productivos (60-75%)
+ * - 33 poco productivos (30-50%)
  */
 
 import 'dotenv/config';
@@ -28,9 +28,9 @@ const WORK_HOURS_MIN = 6; // Horas mínimas de trabajo por día
 const WORK_HOURS_MAX = 8; // Horas máximas de trabajo por día
 const BEAT_INTERVAL_SECONDS = 15; // Cada heartbeat es de 15 segundos
 
-// Fechas de inicio y fin para generar datos (10 de noviembre de 2025 a 10 de enero de 2026)
-const START_DATE = new Date(2025, 10, 10); // 10 de noviembre de 2025 (mes 10 = noviembre, 0-indexed)
-const END_DATE = new Date(2026, 0, 10); // 10 de enero de 2026 (mes 0 = enero)
+// Fechas de inicio y fin para generar datos (01 de octubre de 2025 a 10 de febrero de 2026)
+const START_DATE = new Date(2025, 9, 1); // 1 de octubre de 2025 (mes 9 = octubre, 0-indexed)
+const END_DATE = new Date(2026, 1, 10); // 10 de febrero de 2026 (mes 1 = febrero, 0-indexed)
 
 const PRODUCTIVE_APPS = ['Code', 'Notion'];
 const NEUTRAL_APPS = ['Chrome', 'Edge', 'Slack', 'Teams'];
@@ -198,8 +198,9 @@ function generateSessionsForDay(
 ): Session[] {
   const sessions: Session[] = [];
 
-  // Horario de trabajo típico: 9:00 AM - 6:00 PM (con pausas)
-  const workStartHour = 9;
+  // Horario de trabajo permitido: 8:00 AM - 5:00 PM (17:00) - el backend bloquea eventos fuera de este rango
+  const workStartHour = 8;
+  const workEndHour = 17; // 5:00 PM
 
   // Crear 2-4 sesiones por día (simulando pausas, almuerzo, etc.)
   const numSessions = 2 + Math.floor(Math.random() * 3); // 2-4 sesiones
@@ -210,6 +211,12 @@ function generateSessionsForDay(
   let currentMinute = 0;
 
   for (let i = 0; i < numSessions; i++) {
+    // Asegurar que la sesión no comience antes de las 8:00
+    if (currentHour < workStartHour) {
+      currentHour = workStartHour;
+      currentMinute = 0;
+    }
+
     const sessionStart = new Date(day);
     sessionStart.setHours(currentHour, currentMinute, 0, 0);
 
@@ -220,15 +227,31 @@ function generateSessionsForDay(
     const sessionEnd = new Date(sessionStart);
     sessionEnd.setMinutes(sessionEnd.getMinutes() + sessionDurationMinutes);
 
-    // Agregar pausa entre sesiones (30-90 minutos)
-    if (i < numSessions - 1) {
-      const pauseMinutes = 30 + Math.floor(Math.random() * 60);
-      currentHour = sessionEnd.getHours();
-      currentMinute = sessionEnd.getMinutes() + pauseMinutes;
-      if (currentMinute >= 60) {
-        currentHour += Math.floor(currentMinute / 60);
-        currentMinute = currentMinute % 60;
-      }
+    // Asegurar que la sesión no termine después de las 17:00
+    if (
+      sessionEnd.getHours() > workEndHour ||
+      (sessionEnd.getHours() === workEndHour && sessionEnd.getMinutes() > 0)
+    ) {
+      // Ajustar el final de la sesión a las 17:00
+      sessionEnd.setHours(workEndHour, 0, 0, 0);
+
+      // Recalcular los beats reales de la sesión ajustada
+      const actualDurationMinutes =
+        (sessionEnd.getTime() - sessionStart.getTime()) / (1000 * 60);
+      const actualBeats = Math.floor(
+        (actualDurationMinutes * 60) / BEAT_INTERVAL_SECONDS,
+      );
+
+      sessions.push({
+        session_id: generateId('session'),
+        agent_session_id: generateId('agent-session'),
+        start_time: sessionStart,
+        end_time: sessionEnd,
+        beats: actualBeats,
+      });
+
+      // No hay más sesiones después de las 17:00
+      break;
     }
 
     sessions.push({
@@ -238,6 +261,25 @@ function generateSessionsForDay(
       end_time: sessionEnd,
       beats: sessionBeats,
     });
+
+    // Agregar pausa entre sesiones (30-90 minutos)
+    if (i < numSessions - 1) {
+      const pauseMinutes = 30 + Math.floor(Math.random() * 60);
+      currentHour = sessionEnd.getHours();
+      currentMinute = sessionEnd.getMinutes() + pauseMinutes;
+      if (currentMinute >= 60) {
+        currentHour += Math.floor(currentMinute / 60);
+        currentMinute = currentMinute % 60;
+      }
+
+      // Si la próxima sesión comenzaría después de las 17:00, no crear más sesiones
+      if (
+        currentHour > workEndHour ||
+        (currentHour === workEndHour && currentMinute > 0)
+      ) {
+        break;
+      }
+    }
   }
 
   return sessions;
@@ -551,12 +593,12 @@ function generateBrowserUsage(
   return usage;
 }
 
-// Generar contratistas (30 total)
+// Generar contratistas (100 total)
 function generateContractors(): ContractorConfig[] {
   const contractors: ContractorConfig[] = [];
 
-  // 10 muy productivos (80-90%)
-  for (let i = 0; i < 10; i++) {
+  // 34 muy productivos (80-90%)
+  for (let i = 0; i < 34; i++) {
     contractors.push({
       contractor_id: generateId('contractor'),
       name: generateName(i),
@@ -566,8 +608,8 @@ function generateContractors(): ContractorConfig[] {
     });
   }
 
-  // 10 medianamente productivos (60-75%)
-  for (let i = 10; i < 20; i++) {
+  // 33 medianamente productivos (60-75%)
+  for (let i = 34; i < 67; i++) {
     contractors.push({
       contractor_id: generateId('contractor'),
       name: generateName(i),
@@ -577,8 +619,8 @@ function generateContractors(): ContractorConfig[] {
     });
   }
 
-  // 10 poco productivos (30-50%)
-  for (let i = 20; i < 30; i++) {
+  // 33 poco productivos (30-50%)
+  for (let i = 67; i < 100; i++) {
     contractors.push({
       contractor_id: generateId('contractor'),
       name: generateName(i),
@@ -670,8 +712,8 @@ async function seedPostgres(
         'Software Developer',
         randomClient.id,
         'Argentina',
-        '09:00',
-        '18:00',
+        '08:00',
+        '17:00',
       ]);
     }
 
@@ -685,14 +727,20 @@ async function seedPostgres(
 
 // Función principal
 async function populateTestData() {
+  const scriptStartTime = Date.now();
   console.log('🚀 Iniciando población de datos de prueba...\n');
 
-  // Conectar a ClickHouse
+  // Conectar a ClickHouse con timeouts optimizados para inserciones masivas
   const client = createClient({
     host: `http://${CLICKHOUSE_HOST}:${CLICKHOUSE_PORT}`,
     username: CLICKHOUSE_USERNAME,
     password: CLICKHOUSE_PASSWORD,
     database: CLICKHOUSE_DATABASE,
+    request_timeout: 300000, // 5 minutos de timeout para inserciones grandes
+    max_open_connections: 5, // Limitar conexiones abiertas
+    keep_alive: {
+      enabled: true,
+    },
   });
 
   try {
@@ -731,13 +779,55 @@ async function populateTestData() {
     `⏱️  Horas de trabajo por día: ${WORK_HOURS_MIN} - ${WORK_HOURS_MAX} horas (variable)\n`,
   );
 
-  // Preparar datos para inserción
-  const eventsRaw: any[] = [];
-  const sessionsRaw: any[] = [];
-  const agentSessionsRaw: any[] = [];
+  // Preparar datos para inserción (solo dimensiones, eventos se insertan en lotes)
   const contractorInfoRaw: any[] = [];
   const teamsDimension: any[] = [];
   const clientsDimension: any[] = [];
+
+  // Buffers para inserción por lotes (optimizado para estabilidad y velocidad)
+  const BATCH_SIZE = 50000; // Insertar cada 50,000 eventos (balance entre velocidad y estabilidad)
+  const PARALLEL_INSERTS = 3; // Máximo 3 inserciones paralelas (evita saturar el servidor)
+  const MAX_RETRIES = 3; // Reintentos en caso de error de conexión
+  const RETRY_DELAY = 2000; // 2 segundos entre reintentos
+  let eventsBatch: any[] = [];
+  let sessionsBatch: any[] = [];
+  let agentSessionsBatch: any[] = [];
+  let pendingInserts: Promise<void>[] = []; // Cola de inserciones pendientes
+  let isFlushing = false; // Lock para evitar múltiples flushes simultáneos
+
+  // Función de inserción con reintentos
+  async function insertWithRetry(
+    table: string,
+    values: any[],
+    retries = MAX_RETRIES,
+  ): Promise<void> {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        await client.insert({
+          table,
+          values,
+          format: 'JSONEachRow',
+        });
+        return; // Éxito
+      } catch (error: any) {
+        const isConnectionError =
+          error.code === 'ECONNRESET' ||
+          error.code === 'ECONNREFUSED' ||
+          error.message?.includes('socket hang up');
+
+        if (isConnectionError && attempt < retries) {
+          console.warn(
+            `\n⚠️  Error de conexión en ${table}, reintentando (${attempt}/${retries})...`,
+          );
+          await new Promise((resolve) =>
+            setTimeout(resolve, RETRY_DELAY * attempt),
+          ); // Espera exponencial
+        } else {
+          throw error; // Error no recuperable o se agotaron los reintentos
+        }
+      }
+    }
+  }
 
   // Generar un conjunto fijo de teams y clients (compartidos entre contractors)
   const teams = [
@@ -807,8 +897,8 @@ async function populateTestData() {
       name: contractor.name,
       email: contractor.email,
       job_position: 'Software Developer',
-      work_schedule_start: '09:00',
-      work_schedule_end: '18:00',
+      work_schedule_start: '08:00',
+      work_schedule_end: '17:00',
       country: 'Argentina',
       client_id: client.id,
       team_id: team.id,
@@ -822,8 +912,146 @@ async function populateTestData() {
   const contractorEventsCount = new Map<string, number>();
   contractors.forEach((c) => contractorEventsCount.set(c.contractor_id, 0));
 
+  // Variables para tracking de progreso
+  let totalInsertedEvents = 0;
+  let totalInsertedSessions = 0;
+  let totalInsertedAgentSessions = 0;
+  let lastProgressLog = Date.now();
+  const startTime = scriptStartTime;
+  let lastInsertedEvents = 0;
+  let lastInsertedTime = scriptStartTime;
+  let currentDay: Date | null = null;
+
+  // Función auxiliar para insertar lotes cuando alcancen el tamaño límite (optimizada para velocidad)
+
+  async function flushBatches(force = false) {
+    // Evitar múltiples flushes simultáneos
+    if (isFlushing && !force) {
+      return;
+    }
+
+    // Solo flush si hay suficientes datos o es forzado
+    if (
+      !force &&
+      eventsBatch.length < BATCH_SIZE &&
+      sessionsBatch.length < 1000 &&
+      agentSessionsBatch.length < 1000
+    ) {
+      return;
+    }
+
+    // IMPORTANTE: Esperar a que las inserciones pendientes bajen antes de agregar más
+    while (pendingInserts.length >= PARALLEL_INSERTS) {
+      await Promise.race(pendingInserts);
+      // Limpiar promesas completadas
+      pendingInserts = pendingInserts.filter((p) => {
+        let resolved = false;
+        p.then(() => {
+          resolved = true;
+        }).catch(() => {
+          resolved = true;
+        });
+        return !resolved;
+      });
+      // Pequeña pausa para permitir limpieza
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    isFlushing = true;
+    const inserts: Promise<void>[] = [];
+
+    // Insertar eventos con reintentos
+    if (eventsBatch.length >= BATCH_SIZE || (force && eventsBatch.length > 0)) {
+      const batch = eventsBatch;
+      const batchLength = batch.length;
+      eventsBatch = [];
+      const insertPromise = insertWithRetry('events_raw', batch).then(() => {
+        totalInsertedEvents += batchLength;
+      });
+      inserts.push(insertPromise);
+    }
+
+    // Insertar sesiones con reintentos
+    if (sessionsBatch.length >= 1000 || (force && sessionsBatch.length > 0)) {
+      const batch = sessionsBatch;
+      const batchLength = batch.length;
+      sessionsBatch = [];
+      const insertPromise = insertWithRetry('sessions_raw', batch).then(() => {
+        totalInsertedSessions += batchLength;
+      });
+      inserts.push(insertPromise);
+    }
+
+    // Insertar agent_sessions con reintentos
+    if (
+      agentSessionsBatch.length >= 1000 ||
+      (force && agentSessionsBatch.length > 0)
+    ) {
+      const batch = agentSessionsBatch;
+      const batchLength = batch.length;
+      agentSessionsBatch = [];
+      const insertPromise = insertWithRetry('agent_sessions_raw', batch).then(
+        () => {
+          totalInsertedAgentSessions += batchLength;
+        },
+      );
+      inserts.push(insertPromise);
+    }
+
+    // Agregar inserciones a la cola
+    if (inserts.length > 0) {
+      pendingInserts.push(...inserts);
+
+      // Limpiar inserciones completadas después de que terminen
+      Promise.all(inserts)
+        .then(() => {
+          pendingInserts = pendingInserts.filter((p) => !inserts.includes(p));
+        })
+        .catch(() => {
+          // Manejar errores silenciosamente, el error real se propagará
+          pendingInserts = pendingInserts.filter((p) => !inserts.includes(p));
+        });
+    }
+
+    // Log de progreso cada 2 segundos con más detalles
+    const now = Date.now();
+    if (now - lastProgressLog > 2000) {
+      const elapsed = (now - startTime) / 1000; // segundos
+      const eventsPerSecond =
+        (totalInsertedEvents - lastInsertedEvents) /
+        ((now - lastInsertedTime) / 1000);
+      const avgEventsPerSecond = totalInsertedEvents / elapsed;
+      const pendingInMemory =
+        eventsBatch.length + sessionsBatch.length + agentSessionsBatch.length;
+
+      // Calcular porcentaje estimado (aproximado basado en días procesados)
+      const dayIndex = currentDay
+        ? dates.findIndex((d) => d.getTime() === currentDay.getTime())
+        : -1;
+      const progressPercent =
+        dayIndex >= 0
+          ? (((dayIndex + 1) / dates.length) * 100).toFixed(1)
+          : '0.0';
+
+      process.stdout.write(
+        `\r   💾 [${progressPercent}%] Insertados: ${totalInsertedEvents.toLocaleString()} eventos | ` +
+          `${totalInsertedSessions.toLocaleString()} sesiones | ` +
+          `Velocidad: ${eventsPerSecond.toFixed(0)} evt/s | ` +
+          `Promedio: ${avgEventsPerSecond.toFixed(0)} evt/s | ` +
+          `En memoria: ${pendingInMemory.toLocaleString()} | ` +
+          `Pendientes: ${pendingInserts.length} inserciones`,
+      );
+      lastProgressLog = now;
+      lastInsertedEvents = totalInsertedEvents;
+      lastInsertedTime = now;
+    }
+
+    isFlushing = false;
+  }
+
   // Generar datos para cada día
   for (const day of dates) {
+    currentDay = day;
     // Seleccionar qué contratistas estarán activos este día (70-90% estarán activos)
     const activePercentage = 0.7 + Math.random() * 0.2; // 70% - 90%
     const numActive = Math.max(
@@ -838,14 +1066,22 @@ async function populateTestData() {
     const _inactiveContractors = shuffled.slice(numActive);
     void _inactiveContractors; // Evitar warning de variable no usada
 
+    // Log mejorado: cada día con más información
+    const dayIndex = dates.indexOf(day);
+    const elapsed = (Date.now() - startTime) / 1000;
+    const progressPercent = (((dayIndex + 1) / dates.length) * 100).toFixed(1);
+
     console.log(
-      `📅 ${day.toISOString().split('T')[0]}: ${activeContractors.length}/${contractors.length} contratistas activos (${Math.round((activeContractors.length / contractors.length) * 100)}%)`,
+      `\n📅 [${dayIndex + 1}/${dates.length}] ${day.toISOString().split('T')[0]} - ` +
+        `${activeContractors.length}/${contractors.length} contratistas activos (${Math.round((activeContractors.length / contractors.length) * 100)}%) | ` +
+        `Progreso: ${progressPercent}% | ` +
+        `Tiempo: ${Math.floor(elapsed / 60)}m ${Math.floor(elapsed % 60)}s | ` +
+        `Insertados: ${totalInsertedEvents.toLocaleString()} eventos`,
     );
 
-    // Generar eventos solo para contratistas activos
+    // Generar eventos para contratistas activos (procesar secuencialmente pero con inserción asíncrona optimizada)
     for (const contractor of activeContractors) {
       const agentId = contractorAgents.get(contractor.contractor_id)!;
-      // teamId y clientId están disponibles si se necesitan en el futuro
       const { teamId: _teamId, clientId: _clientId } = contractorTeams.get(
         contractor.contractor_id,
       )!;
@@ -853,18 +1089,16 @@ async function populateTestData() {
       void _clientId;
 
       // Generar factor de variación diaria de productividad
-      // Este factor varía cada día, haciendo que algunos días sean mejores o peores
       const dailyProductivityFactor = generateDailyProductivityFactor(
         contractor.productivity,
       );
 
-      // Generar horas de trabajo aleatorias para este día (entre 6 y 8 horas)
-      // En días con factor bajo, puede trabajar menos horas
+      // Generar horas de trabajo aleatorias para este día
       const baseWorkHours = generateWorkHours();
       const workHours = Math.max(
         WORK_HOURS_MIN,
         baseWorkHours * (0.8 + dailyProductivityFactor * 0.2),
-      ); // Ajustar horas según factor diario
+      );
       const beatsPerDay = calculateBeatsForWorkDay(workHours);
 
       const sessions = generateSessionsForDay(
@@ -886,10 +1120,10 @@ async function populateTestData() {
             contractor.productivity,
             beatIndex,
             session.beats,
-            dailyProductivityFactor, // Pasar el factor diario
+            dailyProductivityFactor,
           );
 
-          eventsRaw.push({
+          eventsBatch.push({
             event_id: eventId,
             contractor_id: contractor.contractor_id,
             agent_id: agentId,
@@ -904,6 +1138,23 @@ async function populateTestData() {
             contractorEventsCount.get(contractor.contractor_id) || 0;
           contractorEventsCount.set(contractor.contractor_id, currentCount + 1);
 
+          // Insertar en lotes cuando se alcance el tamaño límite (await para controlar el flujo)
+          if (eventsBatch.length >= BATCH_SIZE) {
+            const batchSize = eventsBatch.length;
+            try {
+              await flushBatches();
+              // Log silencioso de inserción exitosa
+              process.stdout.write(
+                `\r   ✅ Lote insertado: ${batchSize.toLocaleString()} eventos | ` +
+                  `Total: ${totalInsertedEvents.toLocaleString()} eventos | ` +
+                  `Pendientes: ${pendingInserts.length}`,
+              );
+            } catch (err) {
+              console.error('\n❌ Error en inserción:', err);
+              process.exit(1);
+            }
+          }
+
           // Avanzar 15 segundos
           currentTimestamp = new Date(
             currentTimestamp.getTime() + BEAT_INTERVAL_SECONDS * 1000,
@@ -916,7 +1167,7 @@ async function populateTestData() {
           (sessionEnd.getTime() - sessionStart.getTime()) / 1000,
         );
 
-        sessionsRaw.push({
+        sessionsBatch.push({
           session_id: session.session_id,
           contractor_id: contractor.contractor_id,
           session_start: formatDateForClickHouse(sessionStart),
@@ -927,7 +1178,7 @@ async function populateTestData() {
         });
 
         // Agent Session RAW
-        agentSessionsRaw.push({
+        agentSessionsBatch.push({
           agent_session_id: session.agent_session_id,
           contractor_id: contractor.contractor_id,
           agent_id: agentId,
@@ -940,104 +1191,77 @@ async function populateTestData() {
         });
       }
     }
+
+    // Insertar lotes pendientes al final de cada día para evitar acumulación de memoria
+    if (
+      eventsBatch.length > 0 ||
+      sessionsBatch.length > 0 ||
+      agentSessionsBatch.length > 0
+    ) {
+      await flushBatches(true);
+    }
   }
 
-  // Log de eventos generados por contratista
-  for (const contractor of contractors) {
-    const count = contractorEventsCount.get(contractor.contractor_id) || 0;
-    console.log(
-      `✅ ${contractor.name} (${contractor.productivity}): ${count} eventos generados`,
-    );
-  }
+  // Insertar cualquier lote restante y esperar a que todas las inserciones pendientes terminen
+  console.log('\n⏳ Finalizando inserciones pendientes...');
+  await flushBatches(true);
+  await Promise.all(pendingInserts);
 
-  console.log(`\n📦 Total de registros generados:`);
-  console.log(`   - Events: ${eventsRaw.length}`);
-  console.log(`   - Sessions: ${sessionsRaw.length}`);
-  console.log(`   - Agent Sessions: ${agentSessionsRaw.length}`);
-  console.log(`   - Contractors: ${contractorInfoRaw.length}`);
-  console.log(`   - Teams: ${teamsDimension.length}`);
-  console.log(`   - Clients: ${clientsDimension.length}\n`);
+  const totalTime = (Date.now() - startTime) / 1000;
+  const minutes = Math.floor(totalTime / 60);
+  const seconds = Math.floor(totalTime % 60);
+  const avgSpeed = totalInsertedEvents / totalTime;
 
-  // Insertar datos en ClickHouse
-  console.log('💾 Insertando datos en ClickHouse...\n');
+  console.log('\n' + '='.repeat(80));
+  console.log('✅ GENERACIÓN Y INSERCIÓN COMPLETADA');
+  console.log('='.repeat(80));
+  console.log(`\n📦 Total de registros generados e insertados:`);
+  console.log(`   📊 Events: ${totalInsertedEvents.toLocaleString()}`);
+  console.log(`   📋 Sessions: ${totalInsertedSessions.toLocaleString()}`);
+  console.log(
+    `   👤 Agent Sessions: ${totalInsertedAgentSessions.toLocaleString()}`,
+  );
+  console.log(`   👥 Contractors: ${contractorInfoRaw.length}`);
+  console.log(`   🏢 Teams: ${teamsDimension.length}`);
+  console.log(`   🏛️  Clients: ${clientsDimension.length}`);
+  console.log(`\n⏱️  Tiempo total: ${minutes}m ${seconds}s`);
+  console.log(`🚀 Velocidad promedio: ${avgSpeed.toFixed(0)} eventos/segundo`);
+  console.log(
+    `📈 Velocidad pico estimada: ${(BATCH_SIZE / 2).toFixed(0)} eventos/segundo`,
+  );
+  console.log('='.repeat(80) + '\n');
+
+  // Insertar datos de dimensiones en ClickHouse
+  console.log('💾 Insertando datos de dimensiones en ClickHouse...\n');
 
   try {
-    // Insertar teams_dimension
+    // Insertar teams_dimension con reintentos
     if (teamsDimension.length > 0) {
-      await client.insert({
-        table: 'teams_dimension',
-        values: teamsDimension,
-        format: 'JSONEachRow',
-      });
+      await insertWithRetry('teams_dimension', teamsDimension);
       console.log(
         `✅ Insertados ${teamsDimension.length} registros en teams_dimension`,
       );
     }
 
-    // Insertar clients_dimension
+    // Insertar clients_dimension con reintentos
     if (clientsDimension.length > 0) {
-      await client.insert({
-        table: 'clients_dimension',
-        values: clientsDimension,
-        format: 'JSONEachRow',
-      });
+      await insertWithRetry('clients_dimension', clientsDimension);
       console.log(
         `✅ Insertados ${clientsDimension.length} registros en clients_dimension`,
       );
     }
 
-    // Insertar contractor_info_raw
+    // Insertar contractor_info_raw con reintentos
     if (contractorInfoRaw.length > 0) {
-      await client.insert({
-        table: 'contractor_info_raw',
-        values: contractorInfoRaw,
-        format: 'JSONEachRow',
-      });
+      await insertWithRetry('contractor_info_raw', contractorInfoRaw);
       console.log(
         `✅ Insertados ${contractorInfoRaw.length} registros en contractor_info_raw`,
       );
     }
 
-    // Insertar sessions_raw
-    if (sessionsRaw.length > 0) {
-      await client.insert({
-        table: 'sessions_raw',
-        values: sessionsRaw,
-        format: 'JSONEachRow',
-      });
-      console.log(
-        `✅ Insertados ${sessionsRaw.length} registros en sessions_raw`,
-      );
-    }
-
-    // Insertar agent_sessions_raw
-    if (agentSessionsRaw.length > 0) {
-      await client.insert({
-        table: 'agent_sessions_raw',
-        values: agentSessionsRaw,
-        format: 'JSONEachRow',
-      });
-      console.log(
-        `✅ Insertados ${agentSessionsRaw.length} registros en agent_sessions_raw`,
-      );
-    }
-
-    // Insertar events_raw (en lotes para evitar problemas de memoria)
-    const BATCH_SIZE = 1000;
-    let insertedEvents = 0;
-    for (let i = 0; i < eventsRaw.length; i += BATCH_SIZE) {
-      const batch = eventsRaw.slice(i, i + BATCH_SIZE);
-      await client.insert({
-        table: 'events_raw',
-        values: batch,
-        format: 'JSONEachRow',
-      });
-      insertedEvents += batch.length;
-      process.stdout.write(
-        `\r   Insertando events_raw: ${insertedEvents}/${eventsRaw.length}...`,
-      );
-    }
-    console.log(`\n✅ Insertados ${eventsRaw.length} registros en events_raw`);
+    console.log(
+      `\n✅ Todos los eventos, sesiones y agent_sessions ya fueron insertados en lotes durante la generación.`,
+    );
 
     console.log('\n🎉 ¡Datos de prueba insertados exitosamente!\n');
     console.log('📝 Próximos pasos:');

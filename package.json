@@ -19,9 +19,10 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
-    "populate:test": "ts-node -r tsconfig-paths/register scripts/populate-test-data.ts",
+    "populate:test": "node --max-old-space-size=16384 -r tsconfig-paths/register -r ts-node/register scripts/populate-test-data.ts",
     "populate:dimensions": "ts-node -r tsconfig-paths/register scripts/populate-dimensions.ts",
     "migrate:daily-metrics": "ts-node -r tsconfig-paths/register scripts/migrate-contractor-daily-metrics.ts",
+    "migrate:app-name": "ts-node -r tsconfig-paths/register scripts/run-migration.ts",
     "clear:clickhouse": "ts-node -r tsconfig-paths/register scripts/clear-clickhouse-data.ts",
     "test:redis": "ts-node -r tsconfig-paths/register scripts/test-redis-connection.ts",
     "ping:redis": "ts-node -r tsconfig-paths/register scripts/ping-redis.ts"

@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 
 import { ClickHouseService } from '../../clickhouse/clickhouse.service';
-import { AppDimensionDto } from '../dto/app-dimension.dto';
+import { AppDimensionDto, AppType } from '../dto/app-dimension.dto';
 import { DomainDimensionDto } from '../dto/domain-dimension.dto';
 
 /**
@@ -28,6 +28,57 @@ export class DimensionsService implements OnModuleInit {
   }
 
   /**
+   * Mapea una app legacy (sin id o con estructura antigua) a AppDimensionDto
+   */
+  private mapLegacyApp(app: {
+    name: string;
+    category?: string | null;
+    type?: string | null;
+    weight?: number | null;
+    created_at?: Date;
+  }): AppDimensionDto {
+    // Validar que category sea uno de los valores permitidos
+    const validCategories = [
+      'productive',
+      'neutral',
+      'non_productive',
+    ] as const;
+    const category =
+      app.category && validCategories.includes(app.category as any)
+        ? (app.category as 'productive' | 'neutral' | 'non_productive')
+        : null;
+
+    // Validar que type sea uno de los valores permitidos
+    const validTypes: AppType[] = [
+      'Code',
+      'Web',
+      'Design',
+      'Chat',
+      'Office',
+      'Productivity',
+      'Development',
+      'Database',
+      'Cloud',
+      'Entertainment',
+      'System',
+    ];
+    const type =
+      app.type && validTypes.includes(app.type as AppType)
+        ? (app.type as AppType)
+        : null;
+
+    return {
+      id: `legacy-${app.name.toLowerCase().replace(/\s+/g, '-')}`,
+      name: app.name,
+      category,
+      type,
+      weight: app.weight || 0.5,
+      created_at: app.created_at || new Date(),
+      updated_at: new Date(),
+    };
+  }
+
+  /**
    * Carga las dimensiones desde ClickHouse.
    * Si falla, mantiene los valores por defecto.
    */
@@ -47,14 +98,62 @@ export class DimensionsService implements OnModuleInit {
         return;
       }
 
-      // Cargar apps
-      const apps = await this.clickHouseService.query<AppDimensionDto>(
-        'SELECT app_name, category, weight, created_at FROM apps_dimension',
-      );
+      // Cargar apps (manejar casos de estructura antigua)
+      let apps: AppDimensionDto[];
+      try {
+        // Intentar con estructura nueva (id, name)
+        apps = await this.clickHouseService.query<AppDimensionDto>(
+          'SELECT id, name, category, type, weight, created_at, updated_at FROM apps_dimension',
+        );
+      } catch {
+        // Si falla, intentar con estructura antigua (sin id o con app_name)
+        this.logger.warn(
+          '⚠️ Error loading apps with new structure, trying legacy structure...',
+        );
+        try {
+          // Intentar con name (sin id)
+          const appsWithoutId = await this.clickHouseService.query<{
+            name: string;
+            category?: string | null;
+            type?: string | null;
+            weight?: number | null;
+            created_at?: Date;
+          }>(
+            'SELECT name, category, type, weight, created_at FROM apps_dimension',
+          );
+          apps = appsWithoutId.map(
+            (app): AppDimensionDto => this.mapLegacyApp(app),
+          );
+        } catch {
+          // Si también falla, intentar con app_name (estructura muy antigua)
+          this.logger.warn(
+            '⚠️ Error loading apps with name column, trying app_name...',
+          );
+          const appsWithAppName = await this.clickHouseService.query<{
+            app_name: string;
+            category?: string | null;
+            type?: string | null;
+            weight?: number | null;
+            created_at?: Date;
+          }>(
+            'SELECT app_name, category, type, weight, created_at FROM apps_dimension',
+          );
+          apps = appsWithAppName.map(
+            (app): AppDimensionDto =>
+              this.mapLegacyApp({
+                name: app.app_name,
+                category: app.category,
+                type: app.type,
+                weight: app.weight,
+                created_at: app.created_at,
+              }),
+          );
+        }
+      }
       if (apps.length > 0) {
         const appsMap = new Map<string, AppDimensionDto>();
         for (const app of apps) {
-          appsMap.set(app.app_name, app);
+          appsMap.set(app.name, app);
         }
         this.appsDimension = appsMap;
         this.logger.log(
@@ -98,7 +197,7 @@ export class DimensionsService implements OnModuleInit {
    */
   getAppWeight(appName: string): number {
     const app = this.appsDimension.get(appName);
-    if (app) {
+    if (app && app.weight !== null && app.weight !== undefined) {
       return app.weight;
     }
     // Default para apps desconocidas
@@ -150,27 +249,111 @@ export class DimensionsService implements OnModuleInit {
   private initializeAppsDimensionDefault(): Map<string, AppDimensionDto> {
     const apps: AppDimensionDto[] = [
       // Productivas
-      { app_name: 'Code', category: 'productive', weight: 1.2 },
-      { app_name: 'Visual Studio Code', category: 'productive', weight: 1.2 },
-      { app_name: 'IntelliJ', category: 'productive', weight: 1.2 },
-      { app_name: 'Word', category: 'productive', weight: 1.0 },
-      { app_name: 'Excel', category: 'productive', weight: 1.0 },
-      { app_name: 'PowerPoint', category: 'productive', weight: 1.0 },
+      {
+        id: 'default-code',
+        name: 'Code',
+        category: 'productive',
+        type: 'Code',
+        weight: 1.2,
+      },
+      {
+        id: 'default-vscode',
+        name: 'Visual Studio Code',
+        category: 'productive',
+        type: 'Code',
+        weight: 1.2,
+      },
+      {
+        id: 'default-intellij',
+        name: 'IntelliJ',
+        category: 'productive',
+        type: 'Code',
+        weight: 1.2,
+      },
+      {
+        id: 'default-word',
+        name: 'Word',
+        category: 'productive',
+        type: 'Office',
+        weight: 1.0,
+      },
+      {
+        id: 'default-excel',
+        name: 'Excel',
+        category: 'productive',
+        type: 'Office',
+        weight: 1.0,
+      },
+      {
+        id: 'default-powerpoint',
+        name: 'PowerPoint',
+        category: 'productive',
+        type: 'Office',
+        weight: 1.0,
+      },
       // Neutras
-      { app_name: 'Slack', category: 'neutral', weight: 0.8 },
-      { app_name: 'Teams', category: 'neutral', weight: 0.8 },
-      { app_name: 'Chrome', category: 'neutral', weight: 0.6 },
-      { app_name: 'Edge', category: 'neutral', weight: 0.6 },
+      {
+        id: 'default-slack',
+        name: 'Slack',
+        category: 'neutral',
+        type: 'Chat',
+        weight: 0.8,
+      },
+      {
+        id: 'default-teams',
+        name: 'Teams',
+        category: 'neutral',
+        type: 'Chat',
+        weight: 0.8,
+      },
+      {
+        id: 'default-chrome',
+        name: 'Chrome',
+        category: 'neutral',
+        type: 'Web',
+        weight: 0.6,
+      },
+      {
+        id: 'default-edge',
+        name: 'Edge',
+        category: 'neutral',
+        type: 'Web',
+        weight: 0.6,
+      },
       // No productivas
-      { app_name: 'YouTube', category: 'non_productive', weight: 0.2 },
-      { app_name: 'Spotify', category: 'non_productive', weight: 0.3 },
-      { app_name: 'Discord', category: 'non_productive', weight: 0.4 },
-      { app_name: 'Games', category: 'non_productive', weight: 0.1 },
+      {
+        id: 'default-youtube',
+        name: 'YouTube',
+        category: 'non_productive',
+        type: 'Entertainment',
+        weight: 0.2,
+      },
+      {
+        id: 'default-spotify',
+        name: 'Spotify',
+        category: 'non_productive',
+        type: 'Entertainment',
+        weight: 0.3,
+      },
+      {
+        id: 'default-discord',
+        name: 'Discord',
+        category: 'non_productive',
+        type: 'Chat',
+        weight: 0.4,
+      },
+      {
+        id: 'default-games',
+        name: 'Games',
+        category: 'non_productive',
+        type: 'Entertainment',
+        weight: 0.1,
+      },
     ];
 
     const map = new Map<string, AppDimensionDto>();
     for (const app of apps) {
-      map.set(app.app_name, app);
+      map.set(app.name, app);
     }
     return map;
   }
