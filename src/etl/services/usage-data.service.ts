@@ -17,6 +17,48 @@ export class UsageDataService {
   constructor(private readonly clickHouseService: ClickHouseService) {}
 
   /**
+   * Obtiene los tipos de aplicaciones desde apps_dimension.
+   * Método privado reutilizable para evitar duplicación de código.
+   *
+   * @param appNames Array de nombres de aplicaciones
+   * @returns Map con appName -> type
+   */
+  private async getAppTypesFromDimension(
+    appNames: string[],
+  ): Promise<Record<string, string>> {
+    const typeMap: Record<string, string> = {};
+
+    if (appNames.length === 0) {
+      return typeMap;
+    }
+
+    try {
+      const appNamesList = appNames
+        .map((name) => `'${name.replace(/'/g, "''")}'`)
+        .join(',');
+      const typeQuery = `
+        SELECT name, type
+        FROM apps_dimension
+        WHERE name IN (${appNamesList})
+      `;
+      const typeResults = await this.clickHouseService.query<{
+        name: string;
+        type: string;
+      }>(typeQuery);
+
+      typeResults.forEach((row) => {
+        typeMap[row.name] = row.type;
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Error getting app types from apps_dimension: ${error.message}. Continuing without types.`,
+      );
+    }
+
+    return typeMap;
+  }
+
+  /**
    * Obtiene datos de AppUsage para un contractor y día específico.
    *
    * @param contractorId ID del contractor
@@ -61,32 +103,7 @@ export class UsageDataService {
 
       // Obtener tipos desde apps_dimension
       const appNames = Object.keys(appUsageMap);
-      const typeMap: Record<string, string> = {};
-
-      if (appNames.length > 0) {
-        try {
-          const appNamesList = appNames
-            .map((name) => `'${name.replace(/'/g, "''")}'`)
-            .join(',');
-          const typeQuery = `
-            SELECT name, type
-            FROM apps_dimension
-            WHERE name IN (${appNamesList})
-          `;
-          const typeResults = await this.clickHouseService.query<{
-            name: string;
-            type: string;
-          }>(typeQuery);
-
-          typeResults.forEach((row) => {
-            typeMap[row.name] = row.type;
-          });
-        } catch (error) {
-          this.logger.warn(
-            `Error getting app types from apps_dimension: ${error.message}. Continuing without types.`,
-          );
-        }
-      }
+      const typeMap = await this.getAppTypesFromDimension(appNames);
 
       return Object.entries(appUsageMap)
         .map(([appName, seconds]) => ({
@@ -220,32 +237,7 @@ export class UsageDataService {
 
       // Obtener tipos desde apps_dimension
       const appNames = Object.keys(appUsageMap);
-      const typeMap: Record<string, string> = {};
-
-      if (appNames.length > 0) {
-        try {
-          const appNamesList = appNames
-            .map((name) => `'${name.replace(/'/g, "''")}'`)
-            .join(',');
-          const typeQuery = `
-            SELECT name, type
-            FROM apps_dimension
-            WHERE name IN (${appNamesList})
-          `;
-          const typeResults = await this.clickHouseService.query<{
-            name: string;
-            type: string;
-          }>(typeQuery);
-
-          typeResults.forEach((row) => {
-            typeMap[row.name] = row.type;
-          });
-        } catch (error) {
-          this.logger.warn(
-            `Error getting app types from apps_dimension: ${error.message}. Continuing without types.`,
-          );
-        }
-      }
+      const typeMap = await this.getAppTypesFromDimension(appNames);
 
       return Object.entries(appUsageMap)
         .map(([appName, seconds]) => ({
