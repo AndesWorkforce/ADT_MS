@@ -59,10 +59,40 @@ export class UsageDataService {
         }
       }
 
+      // Obtener tipos desde apps_dimension
+      const appNames = Object.keys(appUsageMap);
+      const typeMap: Record<string, string> = {};
+
+      if (appNames.length > 0) {
+        try {
+          const appNamesList = appNames
+            .map((name) => `'${name.replace(/'/g, "''")}'`)
+            .join(',');
+          const typeQuery = `
+            SELECT name, type
+            FROM apps_dimension
+            WHERE name IN (${appNamesList})
+          `;
+          const typeResults = await this.clickHouseService.query<{
+            name: string;
+            type: string;
+          }>(typeQuery);
+
+          typeResults.forEach((row) => {
+            typeMap[row.name] = row.type;
+          });
+        } catch (error) {
+          this.logger.warn(
+            `Error getting app types from apps_dimension: ${error.message}. Continuing without types.`,
+          );
+        }
+      }
+
       return Object.entries(appUsageMap)
         .map(([appName, seconds]) => ({
           appName,
           seconds: seconds < 0 ? 0 : seconds,
+          type: typeMap[appName] || undefined,
         }))
         .filter((u) => u.seconds > 0);
     } catch (error) {
@@ -188,10 +218,40 @@ export class UsageDataService {
         }
       }
 
+      // Obtener tipos desde apps_dimension
+      const appNames = Object.keys(appUsageMap);
+      const typeMap: Record<string, string> = {};
+
+      if (appNames.length > 0) {
+        try {
+          const appNamesList = appNames
+            .map((name) => `'${name.replace(/'/g, "''")}'`)
+            .join(',');
+          const typeQuery = `
+            SELECT name, type
+            FROM apps_dimension
+            WHERE name IN (${appNamesList})
+          `;
+          const typeResults = await this.clickHouseService.query<{
+            name: string;
+            type: string;
+          }>(typeQuery);
+
+          typeResults.forEach((row) => {
+            typeMap[row.name] = row.type;
+          });
+        } catch (error) {
+          this.logger.warn(
+            `Error getting app types from apps_dimension: ${error.message}. Continuing without types.`,
+          );
+        }
+      }
+
       return Object.entries(appUsageMap)
         .map(([appName, seconds]) => ({
           appName,
           seconds: seconds < 0 ? 0 : seconds,
+          type: typeMap[appName] || undefined,
         }))
         .filter((u) => u.seconds > 0);
     } catch (error) {
@@ -295,9 +355,11 @@ export class UsageDataService {
       const query = `
         SELECT 
           app_name AS appName,
-          sum(JSONExtractFloat(payload, 'AppUsage', app_name)) AS seconds
+          sum(JSONExtractFloat(payload, 'AppUsage', app_name)) AS seconds,
+          any(d.type) AS type
         FROM events_raw
         ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app_name
+        LEFT JOIN apps_dimension d ON d.name = app_name
         WHERE contractor_id = '${contractorId}'
           AND toDate(timestamp) >= '${fromStr}'
           AND toDate(timestamp) <= '${toStr}'
@@ -310,6 +372,7 @@ export class UsageDataService {
       const results = await this.clickHouseService.query<{
         appName: string;
         seconds: number;
+        type?: string;
       }>(query);
 
       return results.map((r) => {
@@ -317,6 +380,7 @@ export class UsageDataService {
         return {
           appName: r.appName,
           seconds: isNaN(seconds) || !isFinite(seconds) ? 0 : seconds,
+          type: r.type || undefined,
         };
       });
     } catch (error) {
@@ -407,9 +471,11 @@ export class UsageDataService {
         SELECT 
           contractor_id,
           app_name AS appName,
-          sum(JSONExtractFloat(payload, 'AppUsage', app_name)) AS seconds
+          sum(JSONExtractFloat(payload, 'AppUsage', app_name)) AS seconds,
+          any(d.type) AS type
         FROM events_raw
         ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app_name
+        LEFT JOIN apps_dimension d ON d.name = app_name
         WHERE contractor_id IN (${contractorIdsList})
           AND toDate(timestamp) >= '${fromStr}'
           AND toDate(timestamp) <= '${toStr}'
@@ -423,6 +489,7 @@ export class UsageDataService {
         contractor_id: string;
         appName: string;
         seconds: number;
+        type?: string;
       }>(query);
 
       // Inicializar Map con arrays vacíos para todos los contractors
@@ -438,6 +505,7 @@ export class UsageDataService {
           existing.push({
             appName: row.appName,
             seconds: isNaN(seconds) || !isFinite(seconds) ? 0 : seconds,
+            type: row.type || undefined,
           });
         }
       });

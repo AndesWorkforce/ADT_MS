@@ -140,6 +140,7 @@ export class RealtimeMetricsService {
       app_usage: appUsage.map((a) => ({
         appName: a.appName,
         seconds: a.seconds,
+        type: a.type,
       })),
       browser_usage: browserUsage.map((b) => ({
         domain: b.domain,
@@ -636,6 +637,7 @@ export class RealtimeMetricsService {
       app_usage: appUsage.map((a) => ({
         appName: a.appName,
         seconds: a.seconds,
+        type: a.type,
       })),
       browser_usage: browserUsage.map((b) => ({
         domain: b.domain,

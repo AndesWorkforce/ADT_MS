@@ -10,6 +10,7 @@ import { DimensionsService } from '../services/dimensions.service';
 export interface AppUsageData {
   appName: string;
   seconds: number;
+  type?: string; // Tipo de aplicación desde apps_dimension
 }
 
 export interface BrowserUsageData {
