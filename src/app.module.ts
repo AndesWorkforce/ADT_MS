@@ -1,5 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { ClientsModule, Transport } from '@nestjs/microservices';
+
+import { envs } from 'config';
 
 import { AppService } from './app.service';
 import { ClickHouseModule } from './clickhouse/clickhouse.module';
@@ -19,6 +22,18 @@ import { RawModule } from './raw/raw.module';
     ConfigModule.forRoot({
       isGlobal: true,
     }),
+    // Configuración de NATS para comunicación entre microservicios
+    ClientsModule.register([
+      {
+        name: 'NATS_SERVICE',
+        transport: Transport.NATS,
+        options: {
+          servers: [`nats://${envs.natsHost}:${envs.natsPort}`],
+          user: envs.natsUsername,
+          pass: envs.natsPassword,
+        },
+      },
+    ]),
     ClickHouseModule,
     RawModule,
     EtlModule,

@@ -28,6 +28,10 @@ interface EnvVars {
   USE_SESSION_QUEUE: boolean;
   USE_CONTRACTOR_QUEUE: boolean;
   USE_ETL_QUEUE: boolean;
+  // Variables para sistema de alertas de inactividad
+  USE_INACTIVITY_ALERTS: boolean;
+  INACTIVITY_THRESHOLD_MINUTES: number;
+  INACTIVITY_SCAN_INTERVAL_MINUTES: number;
 }
 
 export const envSchema = Joi.object({
@@ -86,6 +90,15 @@ export const envSchema = Joi.object({
     .falsy('false')
     .falsy('0')
     .default(false),
+  // Sistema de alertas de inactividad
+  USE_INACTIVITY_ALERTS: Joi.boolean()
+    .truthy('true')
+    .truthy('1')
+    .falsy('false')
+    .falsy('0')
+    .default(false),
+  INACTIVITY_THRESHOLD_MINUTES: Joi.number().default(60),
+  INACTIVITY_SCAN_INTERVAL_MINUTES: Joi.number().default(10),
 }).unknown(true);
 
 const { error, value } = envSchema.validate(process.env);
@@ -127,6 +140,9 @@ export const envs = {
     useSessionQueue: envVars.USE_SESSION_QUEUE,
     useContractorQueue: envVars.USE_CONTRACTOR_QUEUE,
     useEtlQueue: envVars.USE_ETL_QUEUE,
+    useInactivityAlerts: envVars.USE_INACTIVITY_ALERTS,
+    inactivityThresholdMinutes: envVars.INACTIVITY_THRESHOLD_MINUTES,
+    inactivityScanIntervalMinutes: envVars.INACTIVITY_SCAN_INTERVAL_MINUTES,
   },
 };
 
