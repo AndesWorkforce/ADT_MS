@@ -182,4 +182,17 @@ export class RedisKeys {
     }
     return `${this.NAMESPACE}:hourly-productivity:contractor:${contractorId}:days:${days || 30}`;
   }
+
+  // Inactivity Alerts System Keys
+  static lastActivity(agentSessionId: string): string {
+    return `${this.NAMESPACE}:last_activity:${agentSessionId}`;
+  }
+
+  static sessionStart(agentSessionId: string): string {
+    return `${this.NAMESPACE}:session_start:${agentSessionId}`;
+  }
+
+  static alertActive(agentSessionId: string): string {
+    return `${this.NAMESPACE}:alert_active:${agentSessionId}`;
+  }
 }
