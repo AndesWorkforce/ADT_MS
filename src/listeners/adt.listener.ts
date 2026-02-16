@@ -1,7 +1,7 @@
-import { Controller, Logger } from '@nestjs/common';
+import { Controller, Logger, Optional } from '@nestjs/common';
 import { MessagePattern, Payload } from '@nestjs/microservices';
 
-import { getMessagePattern, logError } from 'config';
+import { getMessagePattern, logError, envs } from 'config';
 
 import { ActivityService } from '../etl/services/activity.service';
 import { AppUsageService } from '../etl/services/app-usage.service';
@@ -12,6 +12,7 @@ import { EtlService } from '../etl/services/etl.service';
 import { RankingService } from '../etl/services/ranking.service';
 import { RealtimeMetricsService } from '../etl/services/realtime-metrics.service';
 import { SessionSummariesService } from '../etl/services/session-summaries.service';
+import { EtlQueueService } from '../queues/services/etl-queue.service';
 
 /**
  * Listener NATS para responder peticiones de ADT desde API_GATEWAY.
@@ -37,6 +38,8 @@ export class AdtListener {
     private readonly etlService: EtlService,
     // Servicios de sincronización
     private readonly appsSyncService: AppsSyncService,
+    // Servicio de cola ETL (opcional, solo disponible si USE_ETL_QUEUE=true)
+    @Optional() private readonly etlQueueService?: EtlQueueService,
   ) {}
 
   // ============================================================================
@@ -560,6 +563,9 @@ export class AdtListener {
   /**
    * Ejecuta ETL para procesar métricas diarias.
    * Puede procesar un día específico o un rango de fechas.
+   *
+   * Si USE_ETL_QUEUE=true, encola el job en BullMQ para procesamiento asíncrono.
+   * Si no, ejecuta directamente (comportamiento original).
    */
   @MessagePattern(getMessagePattern('adt.processDailyMetrics'))
   async processDailyMetrics(
@@ -571,6 +577,22 @@ export class AdtListener {
       const fromDate = from ? new Date(from) : undefined;
       const toDate = to ? new Date(to) : undefined;
 
+      // Encolar job en BullMQ si la cola ETL está habilitada
+      if (envs.queues.useEtlQueue && this.etlQueueService) {
+        const jobId = await this.etlQueueService.addDailyMetricsJob(
+          workdayDate,
+          undefined, // contractorIds — procesar todos
+          false, // forceRecalculate
+        );
+
+        return {
+          message: 'Daily metrics job queued for async processing',
+          queued: true,
+          jobId,
+        };
+      }
+
+      // Ejecución directa (fallback si cola no está habilitada)
       const metrics = await this.etlService.processActivityToDailyMetrics(
         workdayDate,
         fromDate,
@@ -590,12 +612,32 @@ export class AdtListener {
 
   /**
    * Ejecuta ETL para procesar resúmenes de sesión.
+   *
+   * Si USE_ETL_QUEUE=true, encola el job en BullMQ para procesamiento asíncrono.
+   * Si no, ejecuta directamente (comportamiento original).
    */
   @MessagePattern(getMessagePattern('adt.processSessionSummaries'))
-  async processSessionSummaries(@Payload() data: { sessionId?: string }) {
+  async processSessionSummaries(
+    @Payload() data: { sessionId?: string; contractorId?: string },
+  ) {
     try {
-      const { sessionId } = data;
+      const { sessionId, contractorId } = data;
 
+      // Encolar job en BullMQ si la cola ETL está habilitada
+      if (envs.queues.useEtlQueue && this.etlQueueService) {
+        const jobId = await this.etlQueueService.addSessionSummaryJob(
+          sessionId || 'all-pending',
+          contractorId || 'unknown',
+        );
+
+        return {
+          message: 'Session summaries job queued for async processing',
+          queued: true,
+          jobId,
+        };
+      }
+
+      // Ejecución directa (fallback si cola no está habilitada)
       const summaries =
         await this.etlService.processActivityToSessionSummary(sessionId);
 
