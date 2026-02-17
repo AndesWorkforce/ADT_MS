@@ -2,13 +2,19 @@
  * Script para poblar ClickHouse con datos de prueba
  *
  * Genera:
- * - 100 contratistas
- * - Datos desde 01/10/2025 hasta 10/02/2026
+ * - 15 contratistas (repartidos entre 5 clientes, 3 por cliente)
+ * - Distribución de agentes:
+ *   - 5 contratistas con 1 agente (solo máquina principal)
+ *   - 5 contratistas con 2 agentes (máquina principal + 1 VM)
+ *   - 5 contratistas con 3 agentes (máquina principal + 2 VMs)
+ * - Datos desde 01/12/2025 hasta 26/02/2026
  * - ~8 horas de trabajo por día por contratista
  * - Eventos distribuidos en sesiones a lo largo del día (8:00-17:00)
- * - 34 muy productivos (80-90%)
- * - 33 medianamente productivos (60-75%)
- * - 33 poco productivos (30-50%)
+ * - 5 muy productivos (80-90%) - 1 agente
+ * - 5 medianamente productivos (60-75%) - 2 agentes
+ * - 5 poco productivos (30-50%) - 3 agentes
+ * - Simula que cuando hay múltiples agentes, solo uno está activo a la vez
+ *   (los demás generan eventos idle en segundo plano)
  */
 
 import 'dotenv/config';
@@ -28,9 +34,9 @@ const WORK_HOURS_MIN = 6; // Horas mínimas de trabajo por día
 const WORK_HOURS_MAX = 8; // Horas máximas de trabajo por día
 const BEAT_INTERVAL_SECONDS = 15; // Cada heartbeat es de 15 segundos
 
-// Fechas de inicio y fin para generar datos (01 de octubre de 2025 a 10 de febrero de 2026)
-const START_DATE = new Date(2025, 9, 1); // 1 de octubre de 2025 (mes 9 = octubre, 0-indexed)
-const END_DATE = new Date(2026, 1, 10); // 10 de febrero de 2026 (mes 1 = febrero, 0-indexed)
+// Fechas de inicio y fin para generar datos (01 de diciembre de 2025 a 26 de febrero de 2026)
+const START_DATE = new Date(2025, 11, 1); // 1 de diciembre de 2025 (mes 11 = diciembre, 0-indexed)
+const END_DATE = new Date(2026, 1, 26); // 26 de febrero de 2026 (mes 1 = febrero, 0-indexed)
 
 const PRODUCTIVE_APPS = ['Code', 'Notion'];
 const NEUTRAL_APPS = ['Chrome', 'Edge', 'Slack', 'Teams'];
@@ -190,10 +196,11 @@ function generateDailyProductivityFactor(
 }
 
 // Generar sesiones distribuidas a lo largo del día
+// Ahora acepta múltiples agentes y genera sesiones para cada uno
 function generateSessionsForDay(
   day: Date,
   contractorId: string,
-  agentId: string,
+  agentIds: string[],
   totalBeats: number,
 ): Session[] {
   const sessions: Session[] = [];
@@ -242,25 +249,37 @@ function generateSessionsForDay(
         (actualDurationMinutes * 60) / BEAT_INTERVAL_SECONDS,
       );
 
-      sessions.push({
-        session_id: generateId('session'),
-        agent_session_id: generateId('agent-session'),
-        start_time: sessionStart,
-        end_time: sessionEnd,
-        beats: actualBeats,
-      });
+      // Crear una sesión compartida para todos los agentes
+      const sessionId = generateId('session');
+
+      // Generar una agent_session para cada agente
+      for (let i = 0; i < agentIds.length; i++) {
+        sessions.push({
+          session_id: sessionId,
+          agent_session_id: generateId('agent-session'),
+          start_time: sessionStart,
+          end_time: sessionEnd,
+          beats: actualBeats,
+        });
+      }
 
       // No hay más sesiones después de las 17:00
       break;
     }
 
-    sessions.push({
-      session_id: generateId('session'),
-      agent_session_id: generateId('agent-session'),
-      start_time: sessionStart,
-      end_time: sessionEnd,
-      beats: sessionBeats,
-    });
+    // Crear una sesión compartida para todos los agentes
+    const sessionId = generateId('session');
+
+    // Generar una agent_session para cada agente
+    for (let i = 0; i < agentIds.length; i++) {
+      sessions.push({
+        session_id: sessionId,
+        agent_session_id: generateId('agent-session'),
+        start_time: sessionStart,
+        end_time: sessionEnd,
+        beats: sessionBeats,
+      });
+    }
 
     // Agregar pausa entre sesiones (30-90 minutos)
     if (i < numSessions - 1) {
@@ -593,12 +612,13 @@ function generateBrowserUsage(
   return usage;
 }
 
-// Generar contratistas (100 total)
+// Generar contratistas (15 total)
+// Distribución: 5 con 1 agente, 5 con 2 agentes, 5 con 3 agentes
 function generateContractors(): ContractorConfig[] {
   const contractors: ContractorConfig[] = [];
 
-  // 34 muy productivos (80-90%)
-  for (let i = 0; i < 34; i++) {
+  // 5 muy productivos (80-90%) - 1 agente
+  for (let i = 0; i < 5; i++) {
     contractors.push({
       contractor_id: generateId('contractor'),
       name: generateName(i),
@@ -608,8 +628,8 @@ function generateContractors(): ContractorConfig[] {
     });
   }
 
-  // 33 medianamente productivos (60-75%)
-  for (let i = 34; i < 67; i++) {
+  // 5 medianamente productivos (60-75%) - 2 agentes
+  for (let i = 5; i < 10; i++) {
     contractors.push({
       contractor_id: generateId('contractor'),
       name: generateName(i),
@@ -619,8 +639,8 @@ function generateContractors(): ContractorConfig[] {
     });
   }
 
-  // 33 poco productivos (30-50%)
-  for (let i = 67; i < 100; i++) {
+  // 5 poco productivos (30-50%) - 3 agentes
+  for (let i = 10; i < 15; i++) {
     contractors.push({
       contractor_id: generateId('contractor'),
       name: generateName(i),
@@ -872,23 +892,49 @@ async function populateTestData() {
   });
 
   // Primero, generar información de todos los contratistas (sin eventos aún)
-  const contractorAgents = new Map<string, string>(); // contractor_id -> agent_id
+  const contractorAgents = new Map<string, string[]>(); // contractor_id -> agent_id[]
   const contractorTeams = new Map<
     string,
     { teamId: string; clientId: string }
   >(); // contractor_id -> {teamId, clientId}
 
-  for (const contractor of contractors) {
-    const agentId = generateId('agent');
-    contractorAgents.set(contractor.contractor_id, agentId);
+  // Repartir 15 contratistas entre 5 clientes (3 por cliente)
+  const contractorsPerClient = 3;
+  let clientIndex = 0;
 
-    // Asignar aleatoriamente un team y client del conjunto fijo
+  for (let i = 0; i < contractors.length; i++) {
+    const contractor = contractors[i];
+
+    // Determinar cantidad de agentes según el índice
+    let numAgents: number;
+    if (i < 5) {
+      numAgents = 1; // Primeros 5: 1 agente
+    } else if (i < 10) {
+      numAgents = 2; // Siguientes 5: 2 agentes
+    } else {
+      numAgents = 3; // Últimos 5: 3 agentes
+    }
+
+    // Generar agentes para este contratista
+    const agentIds: string[] = [];
+    for (let j = 0; j < numAgents; j++) {
+      agentIds.push(generateId('agent'));
+    }
+    contractorAgents.set(contractor.contractor_id, agentIds);
+
+    // Asignar clientes de forma rotativa (3 por cliente)
+    const client = clients[clientIndex];
     const team = teams[Math.floor(Math.random() * teams.length)];
-    const client = clients[Math.floor(Math.random() * clients.length)];
+
     contractorTeams.set(contractor.contractor_id, {
       teamId: team.id,
       clientId: client.id,
     });
+
+    // Avanzar al siguiente cliente cada 3 contratistas
+    if ((i + 1) % contractorsPerClient === 0) {
+      clientIndex++;
+    }
 
     // Información del contratista
     const contractorCreatedAt = new Date(dates[0]);
@@ -1052,19 +1098,8 @@ async function populateTestData() {
   // Generar datos para cada día
   for (const day of dates) {
     currentDay = day;
-    // Seleccionar qué contratistas estarán activos este día (70-90% estarán activos)
-    const activePercentage = 0.7 + Math.random() * 0.2; // 70% - 90%
-    const numActive = Math.max(
-      1,
-      Math.floor(contractors.length * activePercentage),
-    );
-
-    // Mezclar contratistas y seleccionar los que estarán activos
-    const shuffled = [...contractors].sort(() => Math.random() - 0.5);
-    const activeContractors = shuffled.slice(0, numActive);
-    // inactiveContractors no se usa, solo para logging del slice
-    const _inactiveContractors = shuffled.slice(numActive);
-    void _inactiveContractors; // Evitar warning de variable no usada
+    // Todos los contratistas estarán activos todos los días
+    const activeContractors = contractors;
 
     // Log mejorado: cada día con más información
     const dayIndex = dates.indexOf(day);
@@ -1073,15 +1108,15 @@ async function populateTestData() {
 
     console.log(
       `\n📅 [${dayIndex + 1}/${dates.length}] ${day.toISOString().split('T')[0]} - ` +
-        `${activeContractors.length}/${contractors.length} contratistas activos (${Math.round((activeContractors.length / contractors.length) * 100)}%) | ` +
+        `${activeContractors.length}/${contractors.length} contratistas activos (100%) | ` +
         `Progreso: ${progressPercent}% | ` +
         `Tiempo: ${Math.floor(elapsed / 60)}m ${Math.floor(elapsed % 60)}s | ` +
         `Insertados: ${totalInsertedEvents.toLocaleString()} eventos`,
     );
 
-    // Generar eventos para contratistas activos (procesar secuencialmente pero con inserción asíncrona optimizada)
+    // Generar eventos para todos los contratistas (procesar secuencialmente pero con inserción asíncrona optimizada)
     for (const contractor of activeContractors) {
-      const agentId = contractorAgents.get(contractor.contractor_id)!;
+      const agentIds = contractorAgents.get(contractor.contractor_id)!;
       const { teamId: _teamId, clientId: _clientId } = contractorTeams.get(
         contractor.contractor_id,
       )!;
@@ -1104,39 +1139,111 @@ async function populateTestData() {
       const sessions = generateSessionsForDay(
         day,
         contractor.contractor_id,
-        agentId,
+        agentIds,
         beatsPerDay,
       );
 
-      // Procesar cada sesión
+      // Agrupar sesiones por session_id (todas las agent_sessions de una misma sesión lógica)
+      const sessionsBySessionId = new Map<string, Session[]>();
       for (const session of sessions) {
-        const sessionStart = session.start_time;
+        if (!sessionsBySessionId.has(session.session_id)) {
+          sessionsBySessionId.set(session.session_id, []);
+        }
+        sessionsBySessionId.get(session.session_id)!.push(session);
+      }
+
+      // Procesar cada sesión lógica (puede tener múltiples agent_sessions)
+      for (const [sessionId, agentSessions] of sessionsBySessionId) {
+        const firstSession = agentSessions[0];
+        const sessionStart = firstSession.start_time;
         let currentTimestamp = new Date(sessionStart);
 
+        // Crear mapeo explícito entre agentId y agentSession
+        // Las sesiones se generan en el mismo orden que los agentIds
+        const agentToSessionMap = new Map<string, Session>();
+        for (let i = 0; i < agentIds.length && i < agentSessions.length; i++) {
+          agentToSessionMap.set(agentIds[i], agentSessions[i]);
+        }
+
+        // Determinar qué agente está "activo" inicialmente en esta sesión
+        // El agente principal (índice 0) tiene más probabilidad de estar activo
+        let currentActiveAgentIndex =
+          agentIds.length === 1
+            ? 0
+            : Math.random() < 0.6
+              ? 0
+              : Math.floor(Math.random() * (agentIds.length - 1)) + 1;
+        let currentActiveAgentId = agentIds[currentActiveAgentIndex];
+
         // Generar eventos para cada beat de la sesión
-        for (let beatIndex = 0; beatIndex < session.beats; beatIndex++) {
-          const eventId = generateId('event');
-          const payload = generatePayload(
-            contractor.productivity,
-            beatIndex,
-            session.beats,
-            dailyProductivityFactor,
-          );
+        for (let beatIndex = 0; beatIndex < firstSession.beats; beatIndex++) {
+          // Permitir cambio de agente activo durante la sesión (simula que el usuario puede cambiar de máquina)
+          // Probabilidad del 2% por beat de cambiar de agente (aproximadamente cada 5-10 minutos)
+          if (agentIds.length > 1 && Math.random() < 0.02) {
+            // Cambiar a otro agente aleatorio
+            const newIndex = Math.floor(Math.random() * agentIds.length);
+            if (newIndex !== currentActiveAgentIndex) {
+              currentActiveAgentIndex = newIndex;
+              currentActiveAgentId = agentIds[currentActiveAgentIndex];
+            }
+          }
 
-          eventsBatch.push({
-            event_id: eventId,
-            contractor_id: contractor.contractor_id,
-            agent_id: agentId,
-            session_id: session.session_id,
-            agent_session_id: session.agent_session_id,
-            timestamp: formatDateForClickHouse(currentTimestamp),
-            payload: payload,
-            created_at: formatDateForClickHouse(currentTimestamp),
-          });
+          // Para cada agente, generar un evento en este beat
+          for (let agentIndex = 0; agentIndex < agentIds.length; agentIndex++) {
+            const agentId = agentIds[agentIndex];
+            const isActiveAgent = agentId === currentActiveAgentId;
 
-          const currentCount =
-            contractorEventsCount.get(contractor.contractor_id) || 0;
-          contractorEventsCount.set(contractor.contractor_id, currentCount + 1);
+            // Obtener la agent_session correspondiente a este agente
+            const agentSession =
+              agentToSessionMap.get(agentId) ||
+              agentSessions[agentIndex % agentSessions.length];
+
+            // Si este agente es el activo, generar payload normal
+            // Si no, generar payload idle (simula que está en segundo plano)
+            let payload: string;
+            if (isActiveAgent) {
+              payload = generatePayload(
+                contractor.productivity,
+                beatIndex,
+                firstSession.beats,
+                dailyProductivityFactor,
+              );
+            } else {
+              // Agente inactivo: generar payload idle (sin inputs, sin actividad)
+              payload = JSON.stringify({
+                Keyboard: {
+                  InactiveTime: Math.random() * 0.5,
+                  InputsCount: 0,
+                },
+                Mouse: {
+                  InactiveTime: Math.random() * 0.1,
+                  ClicksCount: 0,
+                },
+                IdleTime: 12 + Math.random() * 3, // 12-15s idle
+                AppUsage: {},
+                browser: {},
+              });
+            }
+
+            const eventId = generateId('event');
+            eventsBatch.push({
+              event_id: eventId,
+              contractor_id: contractor.contractor_id,
+              agent_id: agentId,
+              session_id: sessionId,
+              agent_session_id: agentSession.agent_session_id,
+              timestamp: formatDateForClickHouse(currentTimestamp),
+              payload: payload,
+              created_at: formatDateForClickHouse(currentTimestamp),
+            });
+
+            const currentCount =
+              contractorEventsCount.get(contractor.contractor_id) || 0;
+            contractorEventsCount.set(
+              contractor.contractor_id,
+              currentCount + 1,
+            );
+          }
 
           // Insertar en lotes cuando se alcance el tamaño límite (await para controlar el flujo)
           if (eventsBatch.length >= BATCH_SIZE) {
@@ -1161,34 +1268,41 @@ async function populateTestData() {
           );
         }
 
-        // Sesión RAW
+        // Sesión RAW (solo una vez por session_id, no por agent_session)
         const sessionEnd = new Date(currentTimestamp);
         const sessionDuration = Math.floor(
           (sessionEnd.getTime() - sessionStart.getTime()) / 1000,
         );
 
-        sessionsBatch.push({
-          session_id: session.session_id,
-          contractor_id: contractor.contractor_id,
-          session_start: formatDateForClickHouse(sessionStart),
-          session_end: formatDateForClickHouse(sessionEnd),
-          total_duration: sessionDuration,
-          created_at: formatDateForClickHouse(sessionStart),
-          updated_at: formatDateForClickHouse(sessionEnd),
-        });
+        // Insertar sesión solo una vez (no duplicar por cada agente)
+        if (!sessionsBatch.some((s) => s.session_id === sessionId)) {
+          sessionsBatch.push({
+            session_id: sessionId,
+            contractor_id: contractor.contractor_id,
+            session_start: formatDateForClickHouse(sessionStart),
+            session_end: formatDateForClickHouse(sessionEnd),
+            total_duration: sessionDuration,
+            created_at: formatDateForClickHouse(sessionStart),
+            updated_at: formatDateForClickHouse(sessionEnd),
+          });
+        }
 
-        // Agent Session RAW
-        agentSessionsBatch.push({
-          agent_session_id: session.agent_session_id,
-          contractor_id: contractor.contractor_id,
-          agent_id: agentId,
-          session_id: session.session_id,
-          session_start: formatDateForClickHouse(sessionStart),
-          session_end: formatDateForClickHouse(sessionEnd),
-          total_duration: sessionDuration,
-          created_at: formatDateForClickHouse(sessionStart),
-          updated_at: formatDateForClickHouse(sessionEnd),
-        });
+        // Agent Session RAW (una por cada agente)
+        for (let i = 0; i < agentIds.length && i < agentSessions.length; i++) {
+          const agentId = agentIds[i];
+          const agentSession = agentSessions[i];
+          agentSessionsBatch.push({
+            agent_session_id: agentSession.agent_session_id,
+            contractor_id: contractor.contractor_id,
+            agent_id: agentId,
+            session_id: sessionId,
+            session_start: formatDateForClickHouse(sessionStart),
+            session_end: formatDateForClickHouse(sessionEnd),
+            total_duration: sessionDuration,
+            created_at: formatDateForClickHouse(sessionStart),
+            updated_at: formatDateForClickHouse(sessionEnd),
+          });
+        }
       }
     }
 

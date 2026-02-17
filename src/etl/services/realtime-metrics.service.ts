@@ -58,6 +58,58 @@ export class RealtimeMetricsService {
   }
 
   /**
+   * Consolidar beats por timestamp para contratistas con múltiples agentes.
+   * Si al menos un agente está activo en un timestamp → el contratista está activo.
+   * Suma los inputs de todos los agentes en el mismo timestamp.
+   */
+  private consolidateBeatsByTimestamp(
+    beats: ContractorActivity15sDto[],
+  ): ContractorActivity15sDto[] {
+    // Agrupar por beat_timestamp (usando getTime() para comparación)
+    const beatsByTimestamp = new Map<number, ContractorActivity15sDto[]>();
+
+    for (const beat of beats) {
+      const timestamp =
+        beat.beat_timestamp instanceof Date
+          ? beat.beat_timestamp.getTime()
+          : new Date(beat.beat_timestamp).getTime();
+      if (!beatsByTimestamp.has(timestamp)) {
+        beatsByTimestamp.set(timestamp, []);
+      }
+      beatsByTimestamp.get(timestamp)!.push(beat);
+    }
+
+    // Consolidar cada grupo
+    const consolidated: ContractorActivity15sDto[] = [];
+    for (const [timestamp, group] of beatsByTimestamp) {
+      const consolidatedBeat: ContractorActivity15sDto = {
+        contractor_id: group[0].contractor_id,
+        agent_id: null, // Ya no es relevante a nivel consolidado
+        session_id: group[0].session_id, // Tomar el primero (o hacer merge lógico)
+        agent_session_id: null,
+        beat_timestamp: new Date(timestamp),
+        is_idle: group.every((b) => b.is_idle), // true solo si TODOS están idle
+        keyboard_count: group.reduce(
+          (sum, b) => sum + (b.keyboard_count || 0),
+          0,
+        ),
+        mouse_clicks: group.reduce((sum, b) => sum + (b.mouse_clicks || 0), 0),
+      };
+      consolidated.push(consolidatedBeat);
+    }
+
+    return consolidated.sort(
+      (a, b) =>
+        (a.beat_timestamp instanceof Date
+          ? a.beat_timestamp.getTime()
+          : new Date(a.beat_timestamp).getTime()) -
+        (b.beat_timestamp instanceof Date
+          ? b.beat_timestamp.getTime()
+          : new Date(b.beat_timestamp).getTime()),
+    );
+  }
+
+  /**
    * Calcula métricas desde contractor_activity_15s para un contractor y día.
    */
   private async calculateMetrics(
@@ -115,6 +167,11 @@ export class RealtimeMetricsService {
       }
     }
 
+    // ✅ CONSOLIDACIÓN MULTI-AGENTE: Consolidar beats por timestamp antes de calcular métricas
+    // Esto evita que agentes idle en segundo plano penalicen la productividad
+    // cuando otro agente está activo en el mismo intervalo de 15s
+    const consolidatedBeats = this.consolidateBeatsByTimestamp(beats);
+
     // Obtener AppUsage y Browser para este día (usando servicio compartido)
     const appUsage = await this.usageDataService.getAppUsageForDay(
       contractorId,
@@ -125,11 +182,11 @@ export class RealtimeMetricsService {
       workday,
     );
 
-    // Calcular métricas usando el transformer
+    // Calcular métricas usando el transformer con beats consolidados
     const metrics = this.activityToDailyMetricsTransformer.aggregate(
       contractorId,
       workday,
-      beats,
+      consolidatedBeats, // ← Pasar beats consolidados
       appUsage,
       browserUsage,
     );
@@ -148,6 +205,162 @@ export class RealtimeMetricsService {
       })),
       is_realtime: true,
       calculated_at: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Obtiene métricas de productividad consolidadas para un contractor (todos los agentes juntos).
+   * Este método usa la consolidación multi-agente implementada.
+   *
+   * @param contractorId ID del contractor
+   * @param workday Fecha del día (por defecto: hoy)
+   * @returns Métricas consolidadas de productividad
+   */
+  async getConsolidatedProductivity(
+    contractorId: string,
+    workday?: Date,
+  ): Promise<any> {
+    // Reutilizar getRealtimeMetrics que ya consolida beats por timestamp
+    return await this.getRealtimeMetrics(contractorId, workday);
+  }
+
+  /**
+   * Obtiene métricas de productividad granuladas por agente para un contractor.
+   * Cada agente tiene sus propias métricas calculadas independientemente.
+   *
+   * @param contractorId ID del contractor
+   * @param workday Fecha del día (por defecto: hoy)
+   * @returns Objeto con métricas por agente: { [agentId]: metrics }
+   */
+  async getProductivityByAgent(
+    contractorId: string,
+    workday?: Date,
+  ): Promise<{
+    contractor_id: string;
+    workday: string;
+    agents: Record<
+      string,
+      {
+        agent_id: string;
+        total_beats: number;
+        active_beats: number;
+        idle_beats: number;
+        active_percentage: number;
+        total_keyboard_inputs: number;
+        total_mouse_clicks: number;
+        avg_keyboard_per_min: number;
+        avg_mouse_per_min: number;
+        total_session_time_seconds: number;
+        effective_work_seconds: number;
+        productivity_score: number;
+      }
+    >;
+  }> {
+    const workdayDate = workday ? new Date(workday) : new Date();
+    workdayDate.setUTCHours(0, 0, 0, 0);
+    const workdayStr = workdayDate.toISOString().split('T')[0];
+
+    // Obtener todos los agent_ids únicos para este contractor en este día
+    const agentsQuery = `
+      SELECT DISTINCT agent_id
+      FROM contractor_activity_15s
+      WHERE contractor_id = '${contractorId}'
+        AND toDate(beat_timestamp) = '${workdayStr}'
+        AND agent_id IS NOT NULL
+      ORDER BY agent_id
+    `;
+
+    const agentsResult = await this.clickHouseService.query<{
+      agent_id: string;
+    }>(agentsQuery);
+
+    if (agentsResult.length === 0) {
+      return {
+        contractor_id: contractorId,
+        workday: workdayStr,
+        agents: {},
+      };
+    }
+
+    const agents: Record<string, any> = {};
+
+    // Calcular métricas para cada agente
+    for (const { agent_id } of agentsResult) {
+      const beatsQuery = `
+        SELECT 
+          contractor_id,
+          agent_id,
+          session_id,
+          agent_session_id,
+          beat_timestamp,
+          is_idle,
+          keyboard_count,
+          mouse_clicks,
+          workday
+        FROM contractor_activity_15s
+        WHERE contractor_id = '${contractorId}'
+          AND agent_id = '${agent_id}'
+          AND toDate(beat_timestamp) = '${workdayStr}'
+        ORDER BY beat_timestamp
+      `;
+
+      const beats =
+        await this.clickHouseService.query<ContractorActivity15sDto>(
+          beatsQuery,
+        );
+
+      if (beats.length === 0) {
+        continue;
+      }
+
+      // Convertir timestamps
+      for (const beat of beats) {
+        if (typeof beat.beat_timestamp === 'string') {
+          beat.beat_timestamp = new Date(beat.beat_timestamp);
+        }
+      }
+
+      // Obtener AppUsage y Browser para este agente (filtrar por agent_id en events_raw)
+      const appUsage = await this.usageDataService.getAppUsageForDay(
+        contractorId,
+        workdayDate,
+        agent_id, // Filtrar por agente
+      );
+      const browserUsage = await this.usageDataService.getBrowserUsageForDay(
+        contractorId,
+        workdayDate,
+        agent_id, // Filtrar por agente
+      );
+
+      // Calcular métricas usando el transformer (SIN consolidación, cada agente por separado)
+      const metrics = this.activityToDailyMetricsTransformer.aggregate(
+        contractorId,
+        workdayDate,
+        beats, // Beats sin consolidar (solo de este agente)
+        appUsage,
+        browserUsage,
+      );
+
+      agents[agent_id] = {
+        agent_id,
+        total_beats: metrics.total_beats,
+        active_beats: metrics.active_beats,
+        idle_beats: metrics.idle_beats,
+        active_percentage: metrics.active_percentage,
+        total_keyboard_inputs: metrics.total_keyboard_inputs,
+        total_mouse_clicks: metrics.total_mouse_clicks,
+        avg_keyboard_per_min: metrics.avg_keyboard_per_min,
+        avg_mouse_per_min: metrics.avg_mouse_per_min,
+        total_session_time_seconds: metrics.total_session_time_seconds,
+        effective_work_seconds: metrics.effective_work_seconds,
+        productivity_score: metrics.productivity_score,
+      };
+    }
+
+    return {
+      contractor_id: contractorId,
+      workday: workdayStr,
+      agents,
     };
   }
 

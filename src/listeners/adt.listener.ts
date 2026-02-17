@@ -503,6 +503,56 @@ export class AdtListener {
     }
   }
 
+  /**
+   * Obtiene métricas de productividad consolidadas para un contractor (todos los agentes juntos).
+   * Usa la consolidación multi-agente implementada.
+   */
+  @MessagePattern(getMessagePattern('adt.getConsolidatedProductivity'))
+  async getConsolidatedProductivity(
+    @Payload()
+    data: {
+      contractorId: string;
+      workday?: string;
+    },
+  ) {
+    try {
+      const { contractorId, workday } = data;
+      const workdayDate = workday ? new Date(workday) : undefined;
+      return await this.realtimeMetricsService.getConsolidatedProductivity(
+        contractorId,
+        workdayDate,
+      );
+    } catch (error) {
+      logError(this.logger, 'Error in getConsolidatedProductivity', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Obtiene métricas de productividad granuladas por agente para un contractor.
+   * Cada agente tiene sus propias métricas calculadas independientemente.
+   */
+  @MessagePattern(getMessagePattern('adt.getProductivityByAgent'))
+  async getProductivityByAgent(
+    @Payload()
+    data: {
+      contractorId: string;
+      workday?: string;
+    },
+  ) {
+    try {
+      const { contractorId, workday } = data;
+      const workdayDate = workday ? new Date(workday) : undefined;
+      return await this.realtimeMetricsService.getProductivityByAgent(
+        contractorId,
+        workdayDate,
+      );
+    } catch (error) {
+      logError(this.logger, 'Error in getProductivityByAgent', error);
+      throw error;
+    }
+  }
+
   // ============================================================================
   // ENDPOINTS ETL - Procesamiento de datos
   // ============================================================================
