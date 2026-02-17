@@ -18,12 +18,12 @@ export class UsageDataService {
 
   /**
    * Obtiene los tipos de aplicaciones desde apps_dimension.
-   * Método privado reutilizable para evitar duplicación de código.
+   * Método público reutilizable para evitar duplicación de código.
    *
    * @param appNames Array de nombres de aplicaciones
    * @returns Map con appName -> type
    */
-  private async getAppTypesFromDimension(
+  async getAppTypesFromDimension(
     appNames: string[],
   ): Promise<Record<string, string>> {
     const typeMap: Record<string, string> = {};
