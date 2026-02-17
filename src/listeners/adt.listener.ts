@@ -12,6 +12,10 @@ import { EtlService } from '../etl/services/etl.service';
 import { RankingService } from '../etl/services/ranking.service';
 import { RealtimeMetricsService } from '../etl/services/realtime-metrics.service';
 import { SessionSummariesService } from '../etl/services/session-summaries.service';
+import type {
+  AppUsageData,
+  BrowserUsageData,
+} from '../etl/transformers/activity-to-daily-metrics.transformer';
 
 /**
  * Listener NATS para responder peticiones de ADT desde API_GATEWAY.
@@ -541,7 +545,34 @@ export class AdtListener {
 
         const agentIds = Object.keys(byAgent.agents);
 
-        let consolidated: any;
+        let consolidated: {
+          contractor_id: string;
+          workday?: string;
+          total_beats: number;
+          active_beats: number;
+          idle_beats: number;
+          active_percentage: number;
+          total_keyboard_inputs: number;
+          total_mouse_clicks: number;
+          avg_keyboard_per_min: number;
+          avg_mouse_per_min: number;
+          total_session_time_seconds: number;
+          effective_work_seconds: number;
+          productivity_score: number;
+          app_usage?: AppUsageData[];
+          browser_usage?: BrowserUsageData[];
+          is_realtime?: boolean;
+          calculated_at?: string;
+          days_count?: number;
+          contractor_name?: string;
+          contractor_email?: string;
+          job_position?: string;
+          country?: string;
+          client_id?: string;
+          client_name?: string;
+          team_id?: string;
+          team_name?: string;
+        };
         const agents = byAgent.agents;
 
         if (agentIds.length === 1) {
@@ -620,7 +651,33 @@ export class AdtListener {
 
       const agentIds = Object.keys(byAgent.agents);
 
-      let consolidated: any;
+      let consolidated: {
+        contractor_id: string;
+        workday: string;
+        total_beats: number;
+        active_beats: number;
+        idle_beats: number;
+        active_percentage: number;
+        total_keyboard_inputs: number;
+        total_mouse_clicks: number;
+        avg_keyboard_per_min: number;
+        avg_mouse_per_min: number;
+        total_session_time_seconds: number;
+        effective_work_seconds: number;
+        productivity_score: number;
+        app_usage?: AppUsageData[];
+        browser_usage?: BrowserUsageData[];
+        is_realtime?: boolean;
+        calculated_at?: string;
+        contractor_name?: string;
+        contractor_email?: string;
+        job_position?: string;
+        country?: string;
+        client_id?: string;
+        client_name?: string;
+        team_id?: string;
+        team_name?: string;
+      };
 
       if (agentIds.length === 1) {
         // ✅ Un solo agente en el día: usar métricas normales de ese agente
