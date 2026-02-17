@@ -200,6 +200,7 @@ export class UsageDataService {
     fromDate: Date,
     toDate: Date,
     limit?: number,
+    agentId?: string,
   ): Promise<AppUsageData[]> {
     const fromStr = fromDate.toISOString().split('T')[0];
     const toStr = toDate.toISOString().split('T')[0];
@@ -211,6 +212,8 @@ export class UsageDataService {
       ) + 1;
     const useLimit = limit ?? (daysDiff > 7 ? 100000 : undefined);
 
+    const agentFilter = agentId ? `AND agent_id = '${agentId}'` : '';
+
     try {
       const query = `
         SELECT 
@@ -221,6 +224,7 @@ export class UsageDataService {
           AND toDate(timestamp) >= '${fromStr}'
           AND toDate(timestamp) <= '${toStr}'
           AND JSONHas(payload, 'AppUsage')
+          ${agentFilter}
         ORDER BY timestamp
         ${useLimit ? `LIMIT ${useLimit}` : ''}
       `;
@@ -277,6 +281,7 @@ export class UsageDataService {
     fromDate: Date,
     toDate: Date,
     limit?: number,
+    agentId?: string,
   ): Promise<BrowserUsageData[]> {
     const fromStr = fromDate.toISOString().split('T')[0];
     const toStr = toDate.toISOString().split('T')[0];
@@ -288,6 +293,8 @@ export class UsageDataService {
       ) + 1;
     const useLimit = limit ?? (daysDiff > 7 ? 100000 : undefined);
 
+    const agentFilter = agentId ? `AND agent_id = '${agentId}'` : '';
+
     try {
       const query = `
         SELECT 
@@ -298,6 +305,7 @@ export class UsageDataService {
           AND toDate(timestamp) >= '${fromStr}'
           AND toDate(timestamp) <= '${toStr}'
           AND JSONHas(payload, 'browser')
+          ${agentFilter}
         ORDER BY timestamp
         ${useLimit ? `LIMIT ${useLimit}` : ''}
       `;

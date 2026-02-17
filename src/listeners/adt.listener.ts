@@ -504,51 +504,177 @@ export class AdtListener {
   }
 
   /**
-   * Obtiene métricas de productividad consolidadas para un contractor (todos los agentes juntos).
-   * Usa la consolidación multi-agente implementada.
+   * Obtiene un resumen de productividad para un contractor.
+   * Puede trabajar por día (workday) o por rango de fechas (from/to).
+   *
+   * - Consolidado: todos los agentes juntos (multi-agente consolidado)
+   * - Por agente: métricas granuladas por agent_id
    */
-  @MessagePattern(getMessagePattern('adt.getConsolidatedProductivity'))
-  async getConsolidatedProductivity(
+  @MessagePattern(getMessagePattern('adt.getProductivitySummary'))
+  async getProductivitySummary(
     @Payload()
     data: {
       contractorId: string;
       workday?: string;
+      from?: string;
+      to?: string;
     },
   ) {
     try {
-      const { contractorId, workday } = data;
-      const workdayDate = workday ? new Date(workday) : undefined;
-      return await this.realtimeMetricsService.getConsolidatedProductivity(
-        contractorId,
-        workdayDate,
-      );
-    } catch (error) {
-      logError(this.logger, 'Error in getConsolidatedProductivity', error);
-      throw error;
-    }
-  }
+      const { contractorId, workday, from, to } = data;
 
-  /**
-   * Obtiene métricas de productividad granuladas por agente para un contractor.
-   * Cada agente tiene sus propias métricas calculadas independientemente.
-   */
-  @MessagePattern(getMessagePattern('adt.getProductivityByAgent'))
-  async getProductivityByAgent(
-    @Payload()
-    data: {
-      contractorId: string;
-      workday?: string;
-    },
-  ) {
-    try {
-      const { contractorId, workday } = data;
+      // Rango de fechas (from-to)
+      if (from && to) {
+        const fromDate = new Date(from);
+        const toDate = new Date(to);
+
+        // Primero calculamos métricas por agente para saber cuántos agentes hay
+        const byAgent =
+          await this.realtimeMetricsService.getProductivityByAgentForDateRange(
+            contractorId,
+            fromDate,
+            toDate,
+          );
+
+        const fromStr = fromDate.toISOString().split('T')[0];
+        const toStr = toDate.toISOString().split('T')[0];
+
+        const agentIds = Object.keys(byAgent.agents);
+
+        let consolidated: any;
+        const agents = byAgent.agents;
+
+        if (agentIds.length === 1) {
+          // ✅ Un solo agente: NO usar lógica consolidada en el cálculo de productividad.
+          // Usamos las métricas del agente, pero enriquecidas con los campos del consolidated de rango.
+          const singleAgentId = agentIds[0];
+          const a = byAgent.agents[singleAgentId];
+
+          const enriched =
+            await this.realtimeMetricsService.getRealtimeMetricsForDateRange(
+              contractorId,
+              fromDate,
+              toDate,
+            );
+
+          consolidated = {
+            ...enriched,
+            total_beats: a.total_beats,
+            active_beats: a.active_beats,
+            idle_beats: a.idle_beats,
+            active_percentage: a.active_percentage,
+            total_keyboard_inputs: a.total_keyboard_inputs,
+            total_mouse_clicks: a.total_mouse_clicks,
+            avg_keyboard_per_min: a.avg_keyboard_per_min,
+            avg_mouse_per_min: a.avg_mouse_per_min,
+            total_session_time_seconds: a.total_session_time_seconds,
+            effective_work_seconds: a.effective_work_seconds,
+            productivity_score: a.productivity_score,
+            app_usage: a.app_usage ?? [],
+            browser_usage: a.browser_usage ?? [],
+          };
+        } else {
+          // ✅ Varios agentes: usar consolidated pre-calculado por el ETL (multi-agente)
+          consolidated =
+            await this.realtimeMetricsService.getRealtimeMetricsForDateRange(
+              contractorId,
+              fromDate,
+              toDate,
+            );
+        }
+
+        // Si solo hay 1 agente, no tiene sentido devolver la sección "agents"
+        if (agentIds.length === 1) {
+          return {
+            contractor_id: contractorId,
+            period: {
+              type: 'range',
+              from: fromStr,
+              to: toStr,
+            },
+            consolidated,
+          };
+        }
+
+        // Varios agentes: devolver consolidated + agents
+        return {
+          contractor_id: contractorId,
+          period: {
+            type: 'range',
+            from: fromStr,
+            to: toStr,
+          },
+          consolidated,
+          agents,
+        };
+      }
+
+      // Día específico (o hoy por defecto)
       const workdayDate = workday ? new Date(workday) : undefined;
-      return await this.realtimeMetricsService.getProductivityByAgent(
+
+      // Métricas por agente para ese día
+      const byAgent = await this.realtimeMetricsService.getProductivityByAgent(
         contractorId,
         workdayDate,
       );
+
+      const agentIds = Object.keys(byAgent.agents);
+
+      let consolidated: any;
+
+      if (agentIds.length === 1) {
+        // ✅ Un solo agente en el día: usar métricas normales de ese agente
+        const singleAgentId = agentIds[0];
+        const a = byAgent.agents[singleAgentId];
+
+        consolidated = {
+          contractor_id: contractorId,
+          workday: byAgent.workday,
+          total_beats: a.total_beats,
+          active_beats: a.active_beats,
+          idle_beats: a.idle_beats,
+          active_percentage: a.active_percentage,
+          total_keyboard_inputs: a.total_keyboard_inputs,
+          total_mouse_clicks: a.total_mouse_clicks,
+          avg_keyboard_per_min: a.avg_keyboard_per_min,
+          avg_mouse_per_min: a.avg_mouse_per_min,
+          total_session_time_seconds: a.total_session_time_seconds,
+          effective_work_seconds: a.effective_work_seconds,
+          productivity_score: a.productivity_score,
+          app_usage: a.app_usage ?? [],
+          browser_usage: a.browser_usage ?? [],
+          is_realtime: true,
+        };
+
+        // No devolvemos "agents" porque sería redundante
+        return {
+          contractor_id: contractorId,
+          period: {
+            type: 'day',
+            workday: consolidated.workday,
+          },
+          consolidated,
+        };
+      }
+
+      // ✅ Varios agentes: usar consolidación multi-agente por día
+      consolidated =
+        await this.realtimeMetricsService.getConsolidatedProductivity(
+          contractorId,
+          workdayDate,
+        );
+
+      return {
+        contractor_id: contractorId,
+        period: {
+          type: 'day',
+          workday: consolidated.workday,
+        },
+        consolidated,
+        agents: byAgent.agents,
+      };
     } catch (error) {
-      logError(this.logger, 'Error in getProductivityByAgent', error);
+      logError(this.logger, 'Error in getProductivitySummary', error);
       throw error;
     }
   }
