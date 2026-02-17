@@ -83,6 +83,8 @@ export interface EtlJobData extends BaseJobData {
   toDate?: Date;
   workday?: Date;
   sessionId?: string;
+  contractorId?: string;
+  contractorIds?: string[];
   force?: boolean;
 }
 

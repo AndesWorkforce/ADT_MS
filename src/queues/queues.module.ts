@@ -6,22 +6,33 @@ import { envs } from 'config/envs';
 import { QUEUE_NAMES } from 'config/bullmq.config';
 
 import { ClickHouseModule } from '../clickhouse/clickhouse.module';
+import { EtlModule } from '../etl/etl.module';
 import { RedisModule } from '../redis/redis.module';
-import { SaveEventProcessor, InactivityScanProcessor } from './processors';
-import { EventQueueService, InactivityScanQueueService } from './services';
+import {
+  SaveEventProcessor,
+  InactivityScanProcessor,
+  DailyMetricsProcessor,
+  SessionSummaryProcessor,
+} from './processors';
+import {
+  EventQueueService,
+  InactivityScanQueueService,
+  EtlQueueService,
+} from './services';
 
 /**
  * Módulo de Colas con BullMQ
  *
  * FASE 2: Cola de eventos implementada
  * FASE 2.5: Sistema de alertas de inactividad
+ * FASE 4: Colas ETL para métricas diarias y resúmenes de sesión
  *
  * Este módulo gestiona todas las colas de procesamiento asíncrono:
  * - Eventos de agentes (alta frecuencia) ✅ IMPLEMENTADO
  * - Escaneo de inactividad (periódico) ✅ IMPLEMENTADO
  * - Sesiones y agent sessions (TODO FASE 3)
  * - Actualizaciones de contractors (TODO FASE 3)
- * - ETLs pesados (TODO FASE 4)
+ * - ETLs pesados ✅ IMPLEMENTADO (FASE 4)
  *
  * Usa Redis en una DB separada (REDIS_QUEUE_DB) para evitar conflictos con caché
  */
@@ -51,6 +62,18 @@ import { EventQueueService, InactivityScanQueueService } from './services';
         ]
       : []),
 
+    // ✅ FASE 4: Registrar colas ETL (condicional)
+    ...(envs.queues.useEtlQueue
+      ? [
+          BullModule.registerQueue({
+            name: QUEUE_NAMES.ETL_DAILY_METRICS,
+          }),
+          BullModule.registerQueue({
+            name: QUEUE_NAMES.ETL_SESSION_SUMMARIES,
+          }),
+        ]
+      : []),
+
     // NATS Client para InactivityScanProcessor (RPC calls y eventos)
     ...(envs.queues.useInactivityAlerts
       ? [
@@ -73,6 +96,9 @@ import { EventQueueService, InactivityScanQueueService } from './services';
 
     // Importar RedisModule para tracking de inactividad
     RedisModule,
+
+    // ✅ FASE 4: Importar EtlModule para que los processors ETL puedan usar EtlService
+    ...(envs.queues.useEtlQueue ? [EtlModule] : []),
   ],
   providers: [
     // ✅ FASE 2: Processor de eventos
@@ -85,6 +111,11 @@ import { EventQueueService, InactivityScanQueueService } from './services';
     ...(envs.queues.useInactivityAlerts
       ? [InactivityScanProcessor, InactivityScanQueueService]
       : []),
+
+    // ✅ FASE 4: Processors y servicio ETL (condicional)
+    ...(envs.queues.useEtlQueue
+      ? [DailyMetricsProcessor, SessionSummaryProcessor, EtlQueueService]
+      : []),
   ],
   exports: [
     // Exportar servicio para uso en listeners
@@ -92,6 +123,9 @@ import { EventQueueService, InactivityScanQueueService } from './services';
 
     // Exportar servicio de inactividad si está habilitado
     ...(envs.queues.useInactivityAlerts ? [InactivityScanQueueService] : []),
+
+    // ✅ FASE 4: Exportar servicio ETL si está habilitado
+    ...(envs.queues.useEtlQueue ? [EtlQueueService] : []),
   ],
 })
 export class QueuesModule {}
