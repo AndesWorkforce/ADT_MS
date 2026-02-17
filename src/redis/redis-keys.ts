@@ -99,6 +99,18 @@ export class RedisKeys {
     return `${this.NAMESPACE}:active-talent:${period}`;
   }
 
+  static productivityByAgent(contractorId: string, workday: string): string {
+    return `${this.NAMESPACE}:productivity:by-agent:${contractorId}:${workday}`;
+  }
+
+  static productivityByAgentRange(
+    contractorId: string,
+    fromDate: string,
+    toDate: string,
+  ): string {
+    return `${this.NAMESPACE}:productivity:by-agent:${contractorId}:range:${fromDate}:${toDate}`;
+  }
+
   static dailyMetricsByContractor(contractorId: string, days: number): string {
     return `${this.NAMESPACE}:daily-metrics:contractor:${contractorId}:days:${days}`;
   }

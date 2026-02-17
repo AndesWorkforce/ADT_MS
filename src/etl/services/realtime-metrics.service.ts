@@ -5,6 +5,10 @@ import { ClickHouseService } from '../../clickhouse/clickhouse.service';
 import { UsageDataService } from './usage-data.service';
 import { ContractorActivity15sDto } from '../dto/contractor-activity-15s.dto';
 import { ActivityToDailyMetricsTransformer } from '../transformers/activity-to-daily-metrics.transformer';
+import type {
+  AppUsageData,
+  BrowserUsageData,
+} from '../transformers/activity-to-daily-metrics.transformer';
 import { RedisKeys, RedisService } from 'src/redis';
 
 @Injectable()
@@ -54,6 +58,58 @@ export class RealtimeMetricsService {
         return result;
       },
       envs.redis.ttl,
+    );
+  }
+
+  /**
+   * Consolidar beats por timestamp para contratistas con múltiples agentes.
+   * Si al menos un agente está activo en un timestamp → el contratista está activo.
+   * Suma los inputs de todos los agentes en el mismo timestamp.
+   */
+  private consolidateBeatsByTimestamp(
+    beats: ContractorActivity15sDto[],
+  ): ContractorActivity15sDto[] {
+    // Agrupar por beat_timestamp (usando getTime() para comparación)
+    const beatsByTimestamp = new Map<number, ContractorActivity15sDto[]>();
+
+    for (const beat of beats) {
+      const timestamp =
+        beat.beat_timestamp instanceof Date
+          ? beat.beat_timestamp.getTime()
+          : new Date(beat.beat_timestamp).getTime();
+      if (!beatsByTimestamp.has(timestamp)) {
+        beatsByTimestamp.set(timestamp, []);
+      }
+      beatsByTimestamp.get(timestamp)!.push(beat);
+    }
+
+    // Consolidar cada grupo
+    const consolidated: ContractorActivity15sDto[] = [];
+    for (const [timestamp, group] of beatsByTimestamp) {
+      const consolidatedBeat: ContractorActivity15sDto = {
+        contractor_id: group[0].contractor_id,
+        agent_id: null, // Ya no es relevante a nivel consolidado
+        session_id: group[0].session_id, // Tomar el primero (o hacer merge lógico)
+        agent_session_id: null,
+        beat_timestamp: new Date(timestamp),
+        is_idle: group.every((b) => b.is_idle), // true solo si TODOS están idle
+        keyboard_count: group.reduce(
+          (sum, b) => sum + (b.keyboard_count || 0),
+          0,
+        ),
+        mouse_clicks: group.reduce((sum, b) => sum + (b.mouse_clicks || 0), 0),
+      };
+      consolidated.push(consolidatedBeat);
+    }
+
+    return consolidated.sort(
+      (a, b) =>
+        (a.beat_timestamp instanceof Date
+          ? a.beat_timestamp.getTime()
+          : new Date(a.beat_timestamp).getTime()) -
+        (b.beat_timestamp instanceof Date
+          ? b.beat_timestamp.getTime()
+          : new Date(b.beat_timestamp).getTime()),
     );
   }
 
@@ -115,6 +171,11 @@ export class RealtimeMetricsService {
       }
     }
 
+    // ✅ CONSOLIDACIÓN MULTI-AGENTE: Consolidar beats por timestamp antes de calcular métricas
+    // Esto evita que agentes idle en segundo plano penalicen la productividad
+    // cuando otro agente está activo en el mismo intervalo de 15s
+    const consolidatedBeats = this.consolidateBeatsByTimestamp(beats);
+
     // Obtener AppUsage y Browser para este día (usando servicio compartido)
     const appUsage = await this.usageDataService.getAppUsageForDay(
       contractorId,
@@ -125,11 +186,11 @@ export class RealtimeMetricsService {
       workday,
     );
 
-    // Calcular métricas usando el transformer
+    // Calcular métricas usando el transformer con beats consolidados
     const metrics = this.activityToDailyMetricsTransformer.aggregate(
       contractorId,
       workday,
-      beats,
+      consolidatedBeats, // ← Pasar beats consolidados
       appUsage,
       browserUsage,
     );
@@ -148,6 +209,702 @@ export class RealtimeMetricsService {
       })),
       is_realtime: true,
       calculated_at: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Obtiene métricas de productividad consolidadas para un contractor (todos los agentes juntos).
+   * Este método usa la consolidación multi-agente implementada.
+   *
+   * @param contractorId ID del contractor
+   * @param workday Fecha del día (por defecto: hoy)
+   * @returns Métricas consolidadas de productividad
+   */
+  async getConsolidatedProductivity(
+    contractorId: string,
+    workday?: Date,
+  ): Promise<any> {
+    // Reutilizar getRealtimeMetrics que ya consolida beats por timestamp
+    return await this.getRealtimeMetrics(contractorId, workday);
+  }
+
+  /**
+   * Obtiene métricas de productividad granuladas por agente para un contractor.
+   * Cada agente tiene sus propias métricas calculadas independientemente.
+   *
+   * @param contractorId ID del contractor
+   * @param workday Fecha del día (por defecto: hoy)
+   * @returns Objeto con métricas por agente: { [agentId]: metrics }
+   */
+  async getProductivityByAgent(
+    contractorId: string,
+    workday?: Date,
+  ): Promise<{
+    contractor_id: string;
+    workday: string;
+    agents: Record<
+      string,
+      {
+        agent_id: string;
+        total_beats: number;
+        active_beats: number;
+        idle_beats: number;
+        active_percentage: number;
+        total_keyboard_inputs: number;
+        total_mouse_clicks: number;
+        avg_keyboard_per_min: number;
+        avg_mouse_per_min: number;
+        total_session_time_seconds: number;
+        effective_work_seconds: number;
+        productivity_score: number;
+        app_usage?: {
+          appName: string;
+          seconds: number;
+          type?: string;
+        }[];
+        browser_usage?: {
+          domain: string;
+          seconds: number;
+        }[];
+      }
+    >;
+  }> {
+    const workdayDate = workday ? new Date(workday) : new Date();
+    workdayDate.setUTCHours(0, 0, 0, 0);
+    const workdayStr = workdayDate.toISOString().split('T')[0];
+
+    const cacheKey = RedisKeys.productivityByAgent(contractorId, workdayStr);
+
+    return this.redisService.getOrSet(
+      cacheKey,
+      async () => {
+        const beatsQuery = `
+          SELECT 
+            contractor_id,
+            agent_id,
+            session_id,
+            agent_session_id,
+            beat_timestamp,
+            is_idle,
+            keyboard_count,
+            mouse_clicks,
+            workday
+          FROM contractor_activity_15s
+          WHERE contractor_id = '${contractorId}'
+            AND toDate(beat_timestamp) = '${workdayStr}'
+            AND agent_id IS NOT NULL
+          ORDER BY agent_id, beat_timestamp
+        `;
+
+        const allBeats =
+          await this.clickHouseService.query<ContractorActivity15sDto>(
+            beatsQuery,
+          );
+
+        if (allBeats.length === 0) {
+          return {
+            contractor_id: contractorId,
+            workday: workdayStr,
+            agents: {},
+          };
+        }
+
+        // Convertir timestamps
+        for (const beat of allBeats) {
+          if (typeof beat.beat_timestamp === 'string') {
+            beat.beat_timestamp = new Date(beat.beat_timestamp);
+          }
+        }
+
+        // Agrupar beats por agent_id
+        const beatsByAgent = new Map<string, ContractorActivity15sDto[]>();
+        for (const beat of allBeats) {
+          const agentId = String(beat.agent_id);
+          if (!beatsByAgent.has(agentId)) {
+            beatsByAgent.set(agentId, []);
+          }
+          beatsByAgent.get(agentId)!.push(beat);
+        }
+
+        // Obtener todos los agent_ids para obtener app/browser usage en batch
+        const agentIds = Array.from(beatsByAgent.keys());
+        const [appUsageMap, browserUsageMap] = await Promise.all([
+          this.getAppUsageByAgents(contractorId, workdayDate, agentIds),
+          this.getBrowserUsageByAgents(contractorId, workdayDate, agentIds),
+        ]);
+
+        const agents: Record<string, any> = {};
+
+        // Calcular métricas para cada agente usando el transformer (garantiza consistencia)
+        for (const [agentId, agentBeats] of beatsByAgent) {
+          const appUsage = appUsageMap.get(agentId) || [];
+          const browserUsage = browserUsageMap.get(agentId) || [];
+
+          // Usar el transformer para garantizar consistencia con otras métricas
+          const metrics = this.activityToDailyMetricsTransformer.aggregate(
+            contractorId,
+            workdayDate,
+            agentBeats,
+            appUsage,
+            browserUsage,
+          );
+
+          agents[agentId] = {
+            agent_id: agentId,
+            total_beats: metrics.total_beats,
+            active_beats: metrics.active_beats,
+            idle_beats: metrics.idle_beats,
+            active_percentage: metrics.active_percentage,
+            total_keyboard_inputs: metrics.total_keyboard_inputs,
+            total_mouse_clicks: metrics.total_mouse_clicks,
+            avg_keyboard_per_min: metrics.avg_keyboard_per_min,
+            avg_mouse_per_min: metrics.avg_mouse_per_min,
+            total_session_time_seconds: metrics.total_session_time_seconds,
+            effective_work_seconds: metrics.effective_work_seconds,
+            productivity_score: metrics.productivity_score,
+            app_usage: appUsage.map((a) => ({
+              appName: a.appName,
+              seconds: a.seconds,
+              type: a.type,
+            })),
+            browser_usage: browserUsage.map((b) => ({
+              domain: b.domain,
+              seconds: b.seconds,
+            })),
+          };
+        }
+
+        return {
+          contractor_id: contractorId,
+          workday: workdayStr,
+          agents,
+        };
+      },
+      envs.redis.ttl,
+    );
+  }
+
+  /**
+   * Helper: Obtiene app_usage agrupado por agent_id para múltiples agentes.
+   * @private
+   */
+  private async getAppUsageByAgents(
+    contractorId: string,
+    workday: Date,
+    agentIds: string[],
+  ): Promise<Map<string, AppUsageData[]>> {
+    if (agentIds.length === 0) {
+      return new Map();
+    }
+
+    const workdayStr = workday.toISOString().split('T')[0];
+    const agentIdsList = agentIds.map((id) => `'${id}'`).join(',');
+
+    const query = `
+      SELECT 
+        agent_id,
+        app,
+        sum(JSONExtractFloat(payload, 'AppUsage', app)) AS seconds
+      FROM events_raw
+      ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app
+      WHERE contractor_id = '${contractorId}'
+        AND toDate(timestamp) = '${workdayStr}'
+        AND agent_id IN (${agentIdsList})
+        AND JSONHas(payload, 'AppUsage')
+      GROUP BY agent_id, app
+      HAVING seconds > 0
+    `;
+
+    const rows = await this.clickHouseService.query<{
+      agent_id: string;
+      app: string;
+      seconds: number;
+    }>(query);
+
+    // Obtener tipos desde apps_dimension
+    const appNames = [...new Set(rows.map((r) => r.app))];
+    const typeMap =
+      await this.usageDataService.getAppTypesFromDimension(appNames);
+
+    const result = new Map<string, AppUsageData[]>();
+    for (const row of rows) {
+      if (!result.has(row.agent_id)) {
+        result.set(row.agent_id, []);
+      }
+      result.get(row.agent_id)!.push({
+        appName: row.app,
+        seconds: Number(row.seconds) || 0,
+        type: typeMap[row.app] || undefined,
+      });
+    }
+
+    return result;
+  }
+
+  /**
+   * Helper: Obtiene browser_usage agrupado por agent_id para múltiples agentes.
+   * @private
+   */
+  private async getBrowserUsageByAgents(
+    contractorId: string,
+    workday: Date,
+    agentIds: string[],
+  ): Promise<Map<string, BrowserUsageData[]>> {
+    if (agentIds.length === 0) {
+      return new Map();
+    }
+
+    const workdayStr = workday.toISOString().split('T')[0];
+    const agentIdsList = agentIds.map((id) => `'${id}'`).join(',');
+
+    const query = `
+      SELECT 
+        agent_id,
+        domain,
+        sum(JSONExtractFloat(payload, 'browser', domain)) AS seconds
+      FROM events_raw
+      ARRAY JOIN JSONExtractKeys(payload, 'browser') AS domain
+      WHERE contractor_id = '${contractorId}'
+        AND toDate(timestamp) = '${workdayStr}'
+        AND agent_id IN (${agentIdsList})
+        AND JSONHas(payload, 'browser')
+      GROUP BY agent_id, domain
+      HAVING seconds > 0
+    `;
+
+    const rows = await this.clickHouseService.query<{
+      agent_id: string;
+      domain: string;
+      seconds: number;
+    }>(query);
+
+    const result = new Map<string, BrowserUsageData[]>();
+    for (const row of rows) {
+      if (!result.has(row.agent_id)) {
+        result.set(row.agent_id, []);
+      }
+      result.get(row.agent_id)!.push({
+        domain: row.domain,
+        seconds: Number(row.seconds) || 0,
+      });
+    }
+
+    return result;
+  }
+
+  /**
+   * Helper: Obtiene app_usage agrupado por agent_id para múltiples agentes en un rango de fechas.
+   * @private
+   */
+  private async getAppUsageByAgentsForDateRange(
+    contractorId: string,
+    fromDate: Date,
+    toDate: Date,
+    agentIds: string[],
+  ): Promise<Map<string, AppUsageData[]>> {
+    if (agentIds.length === 0) {
+      return new Map();
+    }
+
+    const fromStr = fromDate.toISOString().split('T')[0];
+    const toStr = toDate.toISOString().split('T')[0];
+    const agentIdsList = agentIds.map((id) => `'${id}'`).join(',');
+
+    const query = `
+      SELECT 
+        agent_id,
+        app,
+        sum(JSONExtractFloat(payload, 'AppUsage', app)) AS seconds
+      FROM events_raw
+      ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app
+      WHERE contractor_id = '${contractorId}'
+        AND toDate(timestamp) >= '${fromStr}'
+        AND toDate(timestamp) <= '${toStr}'
+        AND agent_id IN (${agentIdsList})
+        AND JSONHas(payload, 'AppUsage')
+      GROUP BY agent_id, app
+      HAVING seconds > 0
+    `;
+
+    const rows = await this.clickHouseService.query<{
+      agent_id: string;
+      app: string;
+      seconds: number;
+    }>(query);
+
+    // Obtener tipos desde apps_dimension
+    const appNames = [...new Set(rows.map((r) => r.app))];
+    const typeMap =
+      await this.usageDataService.getAppTypesFromDimension(appNames);
+
+    const result = new Map<string, AppUsageData[]>();
+    for (const row of rows) {
+      if (!result.has(row.agent_id)) {
+        result.set(row.agent_id, []);
+      }
+      result.get(row.agent_id)!.push({
+        appName: row.app,
+        seconds: Number(row.seconds) || 0,
+        type: typeMap[row.app] || undefined,
+      });
+    }
+
+    return result;
+  }
+
+  /**
+   * Helper: Obtiene browser_usage agrupado por agent_id para múltiples agentes en un rango de fechas.
+   * @private
+   */
+  private async getBrowserUsageByAgentsForDateRange(
+    contractorId: string,
+    fromDate: Date,
+    toDate: Date,
+    agentIds: string[],
+  ): Promise<Map<string, BrowserUsageData[]>> {
+    if (agentIds.length === 0) {
+      return new Map();
+    }
+
+    const fromStr = fromDate.toISOString().split('T')[0];
+    const toStr = toDate.toISOString().split('T')[0];
+    const agentIdsList = agentIds.map((id) => `'${id}'`).join(',');
+
+    const query = `
+      SELECT 
+        agent_id,
+        domain,
+        sum(JSONExtractFloat(payload, 'browser', domain)) AS seconds
+      FROM events_raw
+      ARRAY JOIN JSONExtractKeys(payload, 'browser') AS domain
+      WHERE contractor_id = '${contractorId}'
+        AND toDate(timestamp) >= '${fromStr}'
+        AND toDate(timestamp) <= '${toStr}'
+        AND agent_id IN (${agentIdsList})
+        AND JSONHas(payload, 'browser')
+      GROUP BY agent_id, domain
+      HAVING seconds > 0
+    `;
+
+    const rows = await this.clickHouseService.query<{
+      agent_id: string;
+      domain: string;
+      seconds: number;
+    }>(query);
+
+    const result = new Map<string, BrowserUsageData[]>();
+    for (const row of rows) {
+      if (!result.has(row.agent_id)) {
+        result.set(row.agent_id, []);
+      }
+      result.get(row.agent_id)!.push({
+        domain: row.domain,
+        seconds: Number(row.seconds) || 0,
+      });
+    }
+
+    return result;
+  }
+
+  /**
+   * Obtiene métricas de productividad granuladas por agente para un contractor en un rango de fechas.
+   * @param contractorId ID del contractor
+   * @param fromDate Fecha de inicio (inclusive)
+   * @param toDate Fecha de fin (inclusive)
+   */
+  async getProductivityByAgentForDateRange(
+    contractorId: string,
+    fromDate: Date,
+    toDate: Date,
+  ): Promise<{
+    contractor_id: string;
+    from: string;
+    to: string;
+    agents: Record<
+      string,
+      {
+        agent_id: string;
+        total_beats: number;
+        active_beats: number;
+        idle_beats: number;
+        active_percentage: number;
+        total_keyboard_inputs: number;
+        total_mouse_clicks: number;
+        avg_keyboard_per_min: number;
+        avg_mouse_per_min: number;
+        total_session_time_seconds: number;
+        effective_work_seconds: number;
+        productivity_score: number;
+        app_usage?: {
+          appName: string;
+          seconds: number;
+          type?: string;
+        }[];
+        browser_usage?: {
+          domain: string;
+          seconds: number;
+        }[];
+      }
+    >;
+  }> {
+    const from = new Date(fromDate);
+    from.setUTCHours(0, 0, 0, 0);
+    const to = new Date(toDate);
+    to.setUTCHours(23, 59, 59, 999);
+
+    const fromStr = from.toISOString().split('T')[0];
+    const toStr = to.toISOString().split('T')[0];
+
+    const cacheKey = RedisKeys.productivityByAgentRange(
+      contractorId,
+      fromStr,
+      toStr,
+    );
+
+    return this.redisService.getOrSet(
+      cacheKey,
+      async () => {
+        const beatsQuery = `
+          SELECT 
+            contractor_id,
+            agent_id,
+            session_id,
+            agent_session_id,
+            beat_timestamp,
+            is_idle,
+            keyboard_count,
+            mouse_clicks,
+            workday
+          FROM contractor_activity_15s
+          WHERE contractor_id = '${contractorId}'
+            AND workday >= '${fromStr}'
+            AND workday <= '${toStr}'
+            AND agent_id IS NOT NULL
+          ORDER BY agent_id, beat_timestamp
+        `;
+
+        const allBeats =
+          await this.clickHouseService.query<ContractorActivity15sDto>(
+            beatsQuery,
+          );
+
+        if (allBeats.length === 0) {
+          return {
+            contractor_id: contractorId,
+            from: fromStr,
+            to: toStr,
+            agents: {},
+          };
+        }
+
+        // Convertir timestamps
+        for (const beat of allBeats) {
+          if (typeof beat.beat_timestamp === 'string') {
+            beat.beat_timestamp = new Date(beat.beat_timestamp);
+          }
+        }
+
+        // Agrupar beats por agent_id
+        const beatsByAgent = new Map<string, ContractorActivity15sDto[]>();
+        for (const beat of allBeats) {
+          const agentId = String(beat.agent_id);
+          if (!beatsByAgent.has(agentId)) {
+            beatsByAgent.set(agentId, []);
+          }
+          beatsByAgent.get(agentId)!.push(beat);
+        }
+
+        // Obtener todos los agent_ids para obtener app/browser usage en batch
+        const agentIds = Array.from(beatsByAgent.keys());
+        const [appUsageMap, browserUsageMap] = await Promise.all([
+          this.getAppUsageByAgentsForDateRange(
+            contractorId,
+            from,
+            to,
+            agentIds,
+          ),
+          this.getBrowserUsageByAgentsForDateRange(
+            contractorId,
+            from,
+            to,
+            agentIds,
+          ),
+        ]);
+
+        const agents: Record<string, any> = {};
+
+        // Calcular métricas para cada agente usando el transformer (garantiza consistencia)
+        for (const [agentId, agentBeats] of beatsByAgent) {
+          const appUsage = appUsageMap.get(agentId) || [];
+          const browserUsage = browserUsageMap.get(agentId) || [];
+
+          // Usar el transformer para garantizar consistencia con otras métricas
+          const metrics = this.activityToDailyMetricsTransformer.aggregate(
+            contractorId,
+            from,
+            agentBeats,
+            appUsage,
+            browserUsage,
+          );
+
+          agents[agentId] = {
+            agent_id: agentId,
+            total_beats: metrics.total_beats,
+            active_beats: metrics.active_beats,
+            idle_beats: metrics.idle_beats,
+            active_percentage: metrics.active_percentage,
+            total_keyboard_inputs: metrics.total_keyboard_inputs,
+            total_mouse_clicks: metrics.total_mouse_clicks,
+            avg_keyboard_per_min: metrics.avg_keyboard_per_min,
+            avg_mouse_per_min: metrics.avg_mouse_per_min,
+            total_session_time_seconds: metrics.total_session_time_seconds,
+            effective_work_seconds: metrics.effective_work_seconds,
+            productivity_score: metrics.productivity_score,
+            app_usage: appUsage.map((a) => ({
+              appName: a.appName,
+              seconds: a.seconds,
+              type: a.type,
+            })),
+            browser_usage: browserUsage.map((b) => ({
+              domain: b.domain,
+              seconds: b.seconds,
+            })),
+          };
+        }
+
+        return {
+          contractor_id: contractorId,
+          from: fromStr,
+          to: toStr,
+          agents,
+        };
+      },
+      envs.redis.ttl,
+    );
+  }
+
+  /**
+   * Calcula métricas de productividad consolidadas (multi-agente) para un contractor en un rango de fechas,
+   * usando directamente los beats de contractor_activity_15s y la misma fórmula del transformer.
+   * Esto mantiene consistencia con las métricas por agente, especialmente cuando solo hay un agente.
+   */
+  async getConsolidatedProductivityForDateRange(
+    contractorId: string,
+    fromDate: Date,
+    toDate: Date,
+  ): Promise<any> {
+    const from = new Date(fromDate);
+    from.setUTCHours(0, 0, 0, 0);
+    const to = new Date(toDate);
+    to.setUTCHours(23, 59, 59, 999);
+
+    const fromStr = from.toISOString().split('T')[0];
+    const toStr = to.toISOString().split('T')[0];
+
+    // Leer beats consolidados por timestamp (multi-agente) en el rango
+    const beatsQuery = `
+      SELECT
+        contractor_id,
+        toDate(beat_timestamp) AS workday,
+        beat_timestamp,
+        min(is_idle) AS is_idle,
+        sum(keyboard_count) AS keyboard_count,
+        sum(mouse_clicks) AS mouse_clicks
+      FROM contractor_activity_15s
+      WHERE contractor_id = '${contractorId}'
+        AND workday >= toDate('${fromStr}')
+        AND workday <= toDate('${toStr}')
+      GROUP BY contractor_id, workday, beat_timestamp
+      ORDER BY beat_timestamp
+    `;
+
+    const rows = await this.clickHouseService.query<{
+      contractor_id: string;
+      workday: string;
+      beat_timestamp: string;
+      is_idle: number;
+      keyboard_count: number;
+      mouse_clicks: number;
+    }>(beatsQuery);
+
+    if (rows.length === 0) {
+      return {
+        contractor_id: contractorId,
+        workday: `${fromStr} to ${toStr}`,
+        total_beats: 0,
+        active_beats: 0,
+        idle_beats: 0,
+        active_percentage: 0,
+        total_keyboard_inputs: 0,
+        total_mouse_clicks: 0,
+        avg_keyboard_per_min: 0,
+        avg_mouse_per_min: 0,
+        total_session_time_seconds: 0,
+        effective_work_seconds: 0,
+        productivity_score: 0,
+        app_usage: [],
+        browser_usage: [],
+        is_realtime: false,
+      };
+    }
+
+    const beats: ContractorActivity15sDto[] = rows.map((row) => ({
+      contractor_id: row.contractor_id,
+      agent_id: null,
+      session_id: null,
+      agent_session_id: null,
+      beat_timestamp: new Date(row.beat_timestamp),
+      is_idle: Boolean(row.is_idle),
+      keyboard_count: row.keyboard_count,
+      mouse_clicks: row.mouse_clicks,
+      workday: new Date(row.workday),
+    }));
+
+    // AppUsage y Browser para todo el contractor en el rango (todos los agentes)
+    const appUsage = await this.usageDataService.getAppUsageForDateRange(
+      contractorId,
+      from,
+      to,
+    );
+    const browserUsage =
+      await this.usageDataService.getBrowserUsageForDateRange(
+        contractorId,
+        from,
+        to,
+      );
+
+    const metrics = this.activityToDailyMetricsTransformer.aggregate(
+      contractorId,
+      from,
+      beats,
+      appUsage,
+      browserUsage,
+    );
+
+    return {
+      contractor_id: contractorId,
+      workday: `${fromStr} to ${toStr}`,
+      total_beats: metrics.total_beats,
+      active_beats: metrics.active_beats,
+      idle_beats: metrics.idle_beats,
+      active_percentage: metrics.active_percentage,
+      total_keyboard_inputs: metrics.total_keyboard_inputs,
+      total_mouse_clicks: metrics.total_mouse_clicks,
+      avg_keyboard_per_min: metrics.avg_keyboard_per_min,
+      avg_mouse_per_min: metrics.avg_mouse_per_min,
+      total_session_time_seconds: metrics.total_session_time_seconds,
+      effective_work_seconds: metrics.effective_work_seconds,
+      productivity_score: metrics.productivity_score,
+      app_usage: appUsage.map((a) => ({
+        appName: a.appName,
+        seconds: a.seconds,
+        type: a.type,
+      })),
+      browser_usage: browserUsage.map((b) => ({
+        domain: b.domain,
+        seconds: b.seconds,
+      })),
+      is_realtime: false,
     };
   }
 

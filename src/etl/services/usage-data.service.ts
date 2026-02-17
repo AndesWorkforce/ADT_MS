@@ -18,12 +18,12 @@ export class UsageDataService {
 
   /**
    * Obtiene los tipos de aplicaciones desde apps_dimension.
-   * Método privado reutilizable para evitar duplicación de código.
+   * Método público reutilizable para evitar duplicación de código.
    *
    * @param appNames Array de nombres de aplicaciones
    * @returns Map con appName -> type
    */
-  private async getAppTypesFromDimension(
+  async getAppTypesFromDimension(
     appNames: string[],
   ): Promise<Record<string, string>> {
     const typeMap: Record<string, string> = {};
@@ -63,13 +63,16 @@ export class UsageDataService {
    *
    * @param contractorId ID del contractor
    * @param workday Fecha del día
+   * @param agentId ID del agente (opcional, para filtrar por agente específico)
    * @returns Array de AppUsageData con {appName, seconds}
    */
   async getAppUsageForDay(
     contractorId: string,
     workday: Date,
+    agentId?: string,
   ): Promise<AppUsageData[]> {
     const workdayStr = workday.toISOString().split('T')[0];
+    const agentFilter = agentId ? `AND agent_id = '${agentId}'` : '';
 
     try {
       const query = `
@@ -80,6 +83,7 @@ export class UsageDataService {
         WHERE contractor_id = '${contractorId}'
           AND toDate(timestamp) = '${workdayStr}'
           AND JSONHas(payload, 'AppUsage')
+          ${agentFilter}
         ORDER BY timestamp
       `;
 
@@ -125,13 +129,16 @@ export class UsageDataService {
    *
    * @param contractorId ID del contractor
    * @param workday Fecha del día
+   * @param agentId ID del agente (opcional, para filtrar por agente específico)
    * @returns Array de BrowserUsageData con {domain, seconds}
    */
   async getBrowserUsageForDay(
     contractorId: string,
     workday: Date,
+    agentId?: string,
   ): Promise<BrowserUsageData[]> {
     const workdayStr = workday.toISOString().split('T')[0];
+    const agentFilter = agentId ? `AND agent_id = '${agentId}'` : '';
 
     try {
       const query = `
@@ -142,6 +149,7 @@ export class UsageDataService {
         WHERE contractor_id = '${contractorId}'
           AND toDate(timestamp) = '${workdayStr}'
           AND JSONHas(payload, 'browser')
+          ${agentFilter}
         ORDER BY timestamp
       `;
 
@@ -192,6 +200,7 @@ export class UsageDataService {
     fromDate: Date,
     toDate: Date,
     limit?: number,
+    agentId?: string,
   ): Promise<AppUsageData[]> {
     const fromStr = fromDate.toISOString().split('T')[0];
     const toStr = toDate.toISOString().split('T')[0];
@@ -203,6 +212,8 @@ export class UsageDataService {
       ) + 1;
     const useLimit = limit ?? (daysDiff > 7 ? 100000 : undefined);
 
+    const agentFilter = agentId ? `AND agent_id = '${agentId}'` : '';
+
     try {
       const query = `
         SELECT 
@@ -213,6 +224,7 @@ export class UsageDataService {
           AND toDate(timestamp) >= '${fromStr}'
           AND toDate(timestamp) <= '${toStr}'
           AND JSONHas(payload, 'AppUsage')
+          ${agentFilter}
         ORDER BY timestamp
         ${useLimit ? `LIMIT ${useLimit}` : ''}
       `;
@@ -269,6 +281,7 @@ export class UsageDataService {
     fromDate: Date,
     toDate: Date,
     limit?: number,
+    agentId?: string,
   ): Promise<BrowserUsageData[]> {
     const fromStr = fromDate.toISOString().split('T')[0];
     const toStr = toDate.toISOString().split('T')[0];
@@ -280,6 +293,8 @@ export class UsageDataService {
       ) + 1;
     const useLimit = limit ?? (daysDiff > 7 ? 100000 : undefined);
 
+    const agentFilter = agentId ? `AND agent_id = '${agentId}'` : '';
+
     try {
       const query = `
         SELECT 
@@ -290,6 +305,7 @@ export class UsageDataService {
           AND toDate(timestamp) >= '${fromStr}'
           AND toDate(timestamp) <= '${toStr}'
           AND JSONHas(payload, 'browser')
+          ${agentFilter}
         ORDER BY timestamp
         ${useLimit ? `LIMIT ${useLimit}` : ''}
       `;

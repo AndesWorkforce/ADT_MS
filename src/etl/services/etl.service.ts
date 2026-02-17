@@ -316,9 +316,9 @@ export class EtlService {
           continue;
         }
 
-        // ✅ OPTIMIZACIÓN: Query simplificada en 2 pasos para evitar errores de memoria
-        // Paso 1: Insertar métricas básicas + productivity_score (SIN Maps complejos)
-        // Los JOINs para calcular weighted_seconds son ligeros, solo calculamos totales
+        // ✅ CONSOLIDACIÓN MULTI-AGENTE: Consolidar beats por timestamp antes de calcular métricas
+        // Esto evita que agentes idle en segundo plano penalicen la productividad
+        // cuando otro agente está activo en el mismo intervalo de 15s
         const insertQuery = `
         INSERT INTO contractor_daily_metrics (
           contractor_id,
@@ -339,21 +339,21 @@ export class EtlService {
           created_at
         )
         SELECT
-          a.contractor_id,
-          a.workday,
+          ca.contractor_id,
+          ca.workday,
           count() AS total_beats,
-          sum(if(a.is_idle = 0, 1, 0)) AS active_beats,
-          sum(if(a.is_idle = 1, 1, 0)) AS idle_beats,
-          100.0 * sum(if(a.is_idle = 0, 1, 0)) / nullIf(count(), 0) AS active_percentage,
-          sum(a.keyboard_count) AS total_keyboard_inputs,
-          sum(a.mouse_clicks) AS total_mouse_clicks,
-          round(sum(a.keyboard_count) / nullIf(count() / 4.0, 0), 2) AS avg_keyboard_per_min,
-          round(sum(a.mouse_clicks) / nullIf(count() / 4.0, 0), 2) AS avg_mouse_per_min,
+          sum(if(ca.is_idle_contractor = 0, 1, 0)) AS active_beats,
+          sum(if(ca.is_idle_contractor = 1, 1, 0)) AS idle_beats,
+          100.0 * sum(if(ca.is_idle_contractor = 0, 1, 0)) / nullIf(count(), 0) AS active_percentage,
+          sum(ca.keyboard_count_contractor) AS total_keyboard_inputs,
+          sum(ca.mouse_clicks_contractor) AS total_mouse_clicks,
+          round(sum(ca.keyboard_count_contractor) / nullIf(count() / 4.0, 0), 2) AS avg_keyboard_per_min,
+          round(sum(ca.mouse_clicks_contractor) / nullIf(count() / 4.0, 0), 2) AS avg_mouse_per_min,
           count() * 15 AS total_session_time_seconds,
-          sum(if(a.is_idle = 0, 1, 0)) * 15 AS effective_work_seconds,
+          sum(if(ca.is_idle_contractor = 0, 1, 0)) * 15 AS effective_work_seconds,
           least(100.0, greatest(0.0,
-            0.35 * (100.0 * sum(if(a.is_idle = 0, 1, 0)) / nullIf(count(), 0)) +
-            0.20 * least(100.0, 15.0 * ln(1 + (((sum(a.keyboard_count) + sum(a.mouse_clicks)) / nullIf(count() * 15 / 60, 0)) / 2.0))) +
+            0.35 * (100.0 * sum(if(ca.is_idle_contractor = 0, 1, 0)) / nullIf(count(), 0)) +
+            0.20 * least(100.0, 15.0 * ln(1 + (((sum(ca.keyboard_count_contractor) + sum(ca.mouse_clicks_contractor)) / nullIf(count() * 15 / 60, 0)) / 2.0))) +
             0.30 * ifNull(
               100.0 * greatest(0.0, least(1.0, ((any(app.weighted_seconds) / nullIf(any(app.total_seconds), 0)) - 0.2) / 0.8)),
               50.0
@@ -367,7 +367,18 @@ export class EtlService {
           map() AS app_usage,
           map() AS browser_usage,
           now() AS created_at
-        FROM contractor_activity_15s a
+        FROM (
+          SELECT
+            contractor_id,
+            workday,
+            beat_timestamp,
+            MIN(is_idle) AS is_idle_contractor,
+            SUM(keyboard_count) AS keyboard_count_contractor,
+            SUM(mouse_clicks) AS mouse_clicks_contractor
+          FROM contractor_activity_15s
+          WHERE workday = toDate('${dayStr}')
+          GROUP BY contractor_id, workday, beat_timestamp
+        ) ca
         -- JOIN ligero para apps: solo calcula totales ponderados (sin crear Maps)
         LEFT JOIN (
           SELECT 
@@ -380,7 +391,7 @@ export class EtlService {
           LEFT JOIN apps_dimension d ON d.name = app
           WHERE toDate(timestamp) = toDate('${dayStr}')
           GROUP BY contractor_id, workday
-        ) app ON app.contractor_id = a.contractor_id AND app.workday = a.workday
+        ) app ON app.contractor_id = ca.contractor_id AND app.workday = ca.workday
         -- JOIN ligero para browser: solo calcula totales ponderados (sin crear Maps)
         LEFT JOIN (
           SELECT 
@@ -420,9 +431,8 @@ export class EtlService {
           ARRAY JOIN JSONExtractKeys(payload, 'browser') AS dc
           WHERE toDate(timestamp) = toDate('${dayStr}')
           GROUP BY contractor_id, workday
-        ) web ON web.contractor_id = a.contractor_id AND web.workday = a.workday
-        WHERE a.workday = toDate('${dayStr}')
-        GROUP BY a.contractor_id, a.workday
+        ) web ON web.contractor_id = ca.contractor_id AND web.workday = ca.workday
+        GROUP BY ca.contractor_id, ca.workday
       `;
 
         await this.clickHouseService.command(insertQuery);
