@@ -13,6 +13,7 @@ import { AdtListener } from './listeners/adt.listener';
 import { AgentSessionsListener } from './listeners/agent-sessions.listener';
 import { ContractorsListener } from './listeners/contractors.listener';
 import { DimensionsListener } from './listeners/dimensions.listener';
+import { EtlTriggerListener } from './listeners/etl-trigger.listener';
 import { EventsListener } from './listeners/events.listener';
 import { SessionsListener } from './listeners/sessions.listener';
 import { RawModule } from './raw/raw.module';
@@ -47,6 +48,7 @@ import { RawModule } from './raw/raw.module';
     ContractorsListener,
     DimensionsListener,
     AdtListener,
+    EtlTriggerListener, // ✨ Dispara ETL de sesión al recibir etl.session.trigger
   ],
   providers: [AppService],
 })
