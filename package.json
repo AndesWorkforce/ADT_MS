@@ -25,7 +25,8 @@
     "migrate:app-name": "ts-node -r tsconfig-paths/register scripts/run-migration.ts",
     "clear:clickhouse": "ts-node -r tsconfig-paths/register scripts/clear-clickhouse-data.ts",
     "test:redis": "ts-node -r tsconfig-paths/register scripts/test-redis-connection.ts",
-    "ping:redis": "ts-node -r tsconfig-paths/register scripts/ping-redis.ts"
+    "ping:redis": "ts-node -r tsconfig-paths/register scripts/ping-redis.ts",
+    "flush:cache": "ts-node -r tsconfig-paths/register scripts/flush-cache.ts"
   },
   "dependencies": {
     "@clickhouse/client": "^0.2.7",

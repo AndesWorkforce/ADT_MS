@@ -78,15 +78,17 @@ export class AdtListener {
       from?: string;
       to?: string;
       days?: number;
+      agentId?: string;
     },
   ) {
     try {
-      const { contractorId, from, to, days = 30 } = data;
+      const { contractorId, from, to, days = 30, agentId } = data;
       return await this.sessionSummariesService.getSessionSummaries(
         contractorId,
         from,
         to,
         days,
+        agentId?.trim() || undefined,
       );
     } catch (error) {
       logError(this.logger, 'Error in getSessionSummaries', error);
@@ -96,7 +98,7 @@ export class AdtListener {
 
   /**
    * Obtiene resúmenes de sesión de un contractor agrupados por día.
-   * Puede filtrar por rango de fechas (from/to) o por días hacia atrás (days).
+   * Con agentId: solo ese agente; sin agentId: consolidado (una fila por sesión).
    */
   @MessagePattern(getMessagePattern('adt.getSessionSummariesByDay'))
   async getSessionSummariesByDay(
@@ -106,15 +108,17 @@ export class AdtListener {
       from?: string;
       to?: string;
       days?: number;
+      agentId?: string;
     },
   ) {
     try {
-      const { contractorId, from, to, days = 30 } = data;
+      const { contractorId, from, to, days = 30, agentId } = data;
       return await this.sessionSummariesService.getSessionSummariesByDay(
         contractorId,
         from,
         to,
         days,
+        agentId?.trim() || undefined,
       );
     } catch (error) {
       logError(this.logger, 'Error in getSessionSummariesByDay', error);
@@ -176,6 +180,7 @@ export class AdtListener {
       days?: number;
       startHour?: number;
       endHour?: number;
+      agentId?: string;
     },
   ) {
     try {
@@ -186,6 +191,7 @@ export class AdtListener {
         days = 30,
         startHour = 8,
         endHour = 17,
+        agentId,
       } = data;
       return await this.sessionSummariesService.getHourlySessionDuration(
         contractorId,
@@ -194,6 +200,7 @@ export class AdtListener {
         days,
         startHour,
         endHour,
+        agentId,
       );
     } catch (error) {
       logError(this.logger, 'Error in getHourlySessionDuration', error);
@@ -215,6 +222,7 @@ export class AdtListener {
       days?: number;
       startHour?: number;
       endHour?: number;
+      agentId?: string;
     },
   ) {
     try {
@@ -225,6 +233,7 @@ export class AdtListener {
         days = 30,
         startHour = 8,
         endHour = 17,
+        agentId,
       } = data;
       return await this.sessionSummariesService.getHourlyProductivity(
         contractorId,
@@ -233,6 +242,7 @@ export class AdtListener {
         days,
         startHour,
         endHour,
+        agentId,
       );
     } catch (error) {
       logError(this.logger, 'Error in getHourlyProductivity', error);

@@ -827,11 +827,12 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
       }
 
       // Crear tabla session_summary
-      // Resumen por sesión con productivity_score
+      // Una fila por (contractor_id, agent_id, sesión). Resumen por sesión con productivity_score.
       await this.command(`
         CREATE TABLE IF NOT EXISTS ${dbName}.session_summary (
           session_id String,
           contractor_id String,
+          agent_id Nullable(String),
           session_start DateTime,
           session_end DateTime,
           total_seconds UInt32,
@@ -841,10 +842,22 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
           created_at DateTime DEFAULT now()
         ) ENGINE = MergeTree()
         PARTITION BY toDate(session_start)
-        ORDER BY (contractor_id, session_start, session_id)
+        ORDER BY (contractor_id, agent_id, session_start, session_id)
         TTL session_start + INTERVAL 365 DAY
       `);
       this.logger.log('✅ Table session_summary verified/created');
+
+      // Migración: añadir agent_id si la tabla ya existía sin ella
+      try {
+        await this.command(`
+          ALTER TABLE ${dbName}.session_summary ADD COLUMN IF NOT EXISTS agent_id Nullable(String) AFTER contractor_id
+        `);
+        this.logger.log('✅ session_summary: column agent_id verified/added');
+      } catch {
+        this.logger.debug(
+          'session_summary agent_id column already present or migration skipped',
+        );
+      }
 
       // ✅ OPTIMIZACIÓN: Crear índices secundarios para queries frecuentes
       await this.createPerformanceIndexes(dbName);
