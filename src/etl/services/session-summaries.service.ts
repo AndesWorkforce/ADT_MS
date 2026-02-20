@@ -34,32 +34,30 @@ export class SessionSummariesService {
 
   /**
    * Obtiene resúmenes de sesión de un contractor.
-   * Puede filtrar por rango de fechas (from/to) o por días hacia atrás (days).
-   * El caché será manejado por Redis.
+   * Con agentId: solo sesiones de ese agente. Sin agentId (consolidado): una fila por session_id (métricas agregadas).
    *
    * @param contractorId ID del contractor
    * @param from Fecha de inicio (opcional)
    * @param to Fecha de fin (opcional)
    * @param days Días hacia atrás (default: 30)
-   * @returns Array de resúmenes de sesión
+   * @param agentId Si se informa (y no es 'consolidated'), solo sesiones de ese agente; si no, consolidado (una fila por sesión).
    */
   async getSessionSummaries(
     contractorId: string,
     from?: string,
     to?: string,
     days: number = 30,
+    agentId?: string,
   ): Promise<any[]> {
-    const cacheKey = RedisKeys.sessionSummariesByContractor(
-      contractorId,
-      from,
-      to,
-      days,
-    );
+    const effectiveAgentId =
+      agentId && agentId !== 'consolidated' ? agentId : undefined;
+    const cacheKey =
+      RedisKeys.sessionSummariesByContractor(contractorId, from, to, days) +
+      (effectiveAgentId ? `:agent:${effectiveAgentId}` : ':consolidated');
 
     return this.redisService.getOrSet(
       cacheKey,
       async () => {
-        // Construir filtro de fecha
         let dateFilter: string;
         if (from && to) {
           const fromDate = from.split('T')[0];
@@ -69,23 +67,54 @@ export class SessionSummariesService {
           dateFilter = `toDate(session_start) >= today() - ${days}`;
         }
 
+        const agentFilter = effectiveAgentId
+          ? `AND agent_id = '${effectiveAgentId}'`
+          : '';
+
+        if (effectiveAgentId) {
+          const query = `
+            SELECT 
+              session_id,
+              contractor_id,
+              agent_id,
+              session_start,
+              session_end,
+              total_seconds,
+              active_seconds,
+              idle_seconds,
+              productivity_score,
+              created_at
+            FROM session_summary
+            WHERE contractor_id = '${contractorId}'
+              AND ${dateFilter}
+              ${agentFilter}
+            ORDER BY session_start DESC
+          `;
+          return await this.clickHouseService.query(query);
+        }
+
+        // Consolidado: una fila por session_id (subconsulta evita "aggregate in WHERE" de ClickHouse)
         const query = `
           SELECT 
             session_id,
             contractor_id,
-            session_start,
-            session_end,
-            total_seconds,
-            active_seconds,
-            idle_seconds,
-            productivity_score,
-            created_at
-          FROM session_summary
-          WHERE contractor_id = '${contractorId}'
-            AND ${dateFilter}
+            any(agent_id) AS agent_id,
+            any(session_start) AS session_start,
+            any(session_end) AS session_end,
+            any(total_seconds) AS total_seconds,
+            sum(active_seconds) AS active_seconds,
+            sum(idle_seconds) AS idle_seconds,
+            round(avg(productivity_score), 2) AS productivity_score,
+            max(created_at) AS created_at
+          FROM (
+            SELECT session_id, contractor_id, agent_id, session_start, session_end,
+              total_seconds, active_seconds, idle_seconds, productivity_score, created_at
+            FROM session_summary
+            WHERE contractor_id = '${contractorId}' AND ${dateFilter}
+          ) AS t
+          GROUP BY session_id, contractor_id
           ORDER BY session_start DESC
         `;
-
         return await this.clickHouseService.query(query);
       },
       envs.redis.ttl,
@@ -94,29 +123,31 @@ export class SessionSummariesService {
 
   /**
    * Obtiene resúmenes de sesión de un contractor agrupados por día.
-   * Puede filtrar por rango de fechas (from/to) o por días hacia atrás (days).
-   * El caché será manejado por Redis.
+   * Con agentId: solo sesiones de ese agente. Sin agentId: consolidado (una fila por session_id por día).
    *
    * @param contractorId ID del contractor
    * @param from Fecha de inicio (opcional)
    * @param to Fecha de fin (opcional)
    * @param days Días hacia atrás (default: 30)
-   * @returns Array de objetos con session_day y sessions agrupadas por día
+   * @param agentId Si se informa (y no es 'consolidated'), solo sesiones de ese agente; si no, consolidado.
    */
   async getSessionSummariesByDay(
     contractorId: string,
     from?: string,
     to?: string,
     days: number = 30,
+    agentId?: string,
   ): Promise<Array<{ session_day: string; sessions: any[] }>> {
+    const effectiveAgentId =
+      agentId && agentId !== 'consolidated' ? agentId : undefined;
     const cacheKey =
       RedisKeys.sessionSummariesByContractor(contractorId, from, to, days) +
-      ':by-day';
+      ':by-day' +
+      (effectiveAgentId ? `:agent:${effectiveAgentId}` : ':consolidated');
 
     return this.redisService.getOrSet(
       cacheKey,
       async () => {
-        // Construir filtro de fecha
         let dateFilter: string;
         if (from && to) {
           const fromDate = from.split('T')[0];
@@ -126,49 +157,68 @@ export class SessionSummariesService {
           dateFilter = `toDate(session_start) >= today() - ${days}`;
         }
 
-        const query = `
-          SELECT 
-            session_id,
-            contractor_id,
-            session_start,
-            session_end,
-            total_seconds,
-            active_seconds,
-            idle_seconds,
-            productivity_score,
-            created_at
-          FROM session_summary
-          WHERE contractor_id = '${contractorId}'
-            AND ${dateFilter}
-          ORDER BY session_start DESC
-        `;
+        const agentFilter = effectiveAgentId
+          ? `AND agent_id = '${effectiveAgentId}'`
+          : '';
 
-        const sessions = (await this.clickHouseService.query(query)) as any[];
+        let sessions: any[];
+        if (effectiveAgentId) {
+          const query = `
+            SELECT 
+              session_id,
+              contractor_id,
+              agent_id,
+              session_start,
+              session_end,
+              total_seconds,
+              active_seconds,
+              idle_seconds,
+              productivity_score,
+              created_at
+            FROM session_summary
+            WHERE contractor_id = '${contractorId}'
+              AND ${dateFilter}
+              ${agentFilter}
+            ORDER BY session_start DESC
+          `;
+          sessions = (await this.clickHouseService.query(query)) as any[];
+        } else {
+          const query = `
+            SELECT 
+              session_id,
+              contractor_id,
+              any(agent_id) AS agent_id,
+              any(session_start) AS session_start,
+              any(session_end) AS session_end,
+              any(total_seconds) AS total_seconds,
+              sum(active_seconds) AS active_seconds,
+              sum(idle_seconds) AS idle_seconds,
+              round(avg(productivity_score), 2) AS productivity_score,
+              max(created_at) AS created_at
+            FROM (
+              SELECT session_id, contractor_id, agent_id, session_start, session_end,
+                total_seconds, active_seconds, idle_seconds, productivity_score, created_at
+              FROM session_summary
+              WHERE contractor_id = '${contractorId}' AND ${dateFilter}
+            ) AS t
+            GROUP BY session_id, contractor_id
+            ORDER BY session_start DESC
+          `;
+          sessions = (await this.clickHouseService.query(query)) as any[];
+        }
 
-        // Agrupar sesiones por día
         const groupedByDay = new Map<string, any[]>();
-
         sessions.forEach((session: any) => {
-          // Extraer la fecha del session_start (formato: "YYYY-MM-DD HH:mm:ss")
           const sessionDay = (session.session_start as string).split(' ')[0];
-
           if (!groupedByDay.has(sessionDay)) {
             groupedByDay.set(sessionDay, []);
           }
-
           groupedByDay.get(sessionDay)!.push(session);
         });
 
-        // Convertir Map a Array y ordenar por fecha (más reciente primero)
         const result = Array.from(groupedByDay.entries())
-          .map(([session_day, sessions]) => ({
-            session_day,
-            sessions,
-          }))
-          .sort((a, b) => {
-            // Ordenar por fecha descendente (más reciente primero)
-            return b.session_day.localeCompare(a.session_day);
-          });
+          .map(([session_day, sess]) => ({ session_day, sessions: sess }))
+          .sort((a, b) => b.session_day.localeCompare(a.session_day));
 
         return result;
       },
@@ -208,6 +258,7 @@ export class SessionSummariesService {
    * @param days Días hacia atrás (default: 30)
    * @param startHour Hora de inicio de jornada (default: 8)
    * @param endHour Hora de fin de jornada (default: 17)
+   * @param agentId Si se informa, solo sesiones de ese agente; si no, consolidado (merge de intervalos de todos los agentes).
    * @returns Array de objetos con duración de sesiones por hora
    */
   async getHourlySessionDuration(
@@ -217,6 +268,7 @@ export class SessionSummariesService {
     days: number = 30,
     startHour: number = 8,
     endHour: number = 17,
+    agentId?: string,
   ): Promise<
     Array<{
       hour: number;
@@ -227,7 +279,8 @@ export class SessionSummariesService {
   > {
     const cacheKey =
       RedisKeys.hourlyActivityByContractor(contractorId, from, to, days) +
-      `:hours:${startHour}-${endHour}:session-duration-v3`;
+      `:hours:${startHour}-${endHour}:session-duration-v3` +
+      (agentId && agentId !== 'consolidated' ? `:agent:${agentId}` : '');
 
     return this.redisService.getOrSet(
       cacheKey,
@@ -242,7 +295,12 @@ export class SessionSummariesService {
           dateFilter = `toDate(session_start) >= today() - ${days}`;
         }
 
-        // Obtener todas las sesiones del contractor
+        const agentFilter =
+          agentId && agentId !== 'consolidated'
+            ? `AND agent_id = '${agentId}'`
+            : '';
+
+        // Obtener sesiones del contractor (opcionalmente por agent_id)
         const sessionsQuery = `
           SELECT 
             toDate(session_start) AS session_day,
@@ -251,6 +309,7 @@ export class SessionSummariesService {
           FROM session_summary
           WHERE contractor_id = '${contractorId}'
             AND ${dateFilter}
+            ${agentFilter}
           ORDER BY session_day, start_dt
         `;
 
@@ -261,6 +320,12 @@ export class SessionSummariesService {
           start_dt: string;
           end_dt: string;
         }>;
+
+        // Normalizar fecha: ClickHouse puede devolver "YYYY-MM-DD HH:mm:ss"; ISO usa "T" para parseo consistente
+        const parseDt = (dt: string): Date => {
+          const normalized = String(dt).replace(' ', 'T');
+          return new Date(normalized);
+        };
 
         // Agrupar sesiones por día
         const sessionsByDay = new Map<
@@ -273,22 +338,40 @@ export class SessionSummariesService {
             sessionsByDay.set(day, []);
           }
           sessionsByDay.get(day)!.push({
-            start: new Date(s.start_dt),
-            end: new Date(s.end_dt),
+            start: parseDt(s.start_dt),
+            end: parseDt(s.end_dt),
           });
         }
 
+        // Sin agentId: fusionar intervalos por día para no duplicar tiempo (varios agentes)
+        const mergeIntervals = (
+          intervals: Array<{ start: Date; end: Date }>,
+        ) => {
+          if (intervals.length === 0) return [];
+          const sorted = [...intervals].sort(
+            (a, b) => a.start.getTime() - b.start.getTime(),
+          );
+          const merged: Array<{ start: Date; end: Date }> = [{ ...sorted[0] }];
+          for (let i = 1; i < sorted.length; i++) {
+            const cur = sorted[i];
+            const last = merged[merged.length - 1];
+            if (cur.start.getTime() <= last.end.getTime()) {
+              last.end = new Date(
+                Math.max(last.end.getTime(), cur.end.getTime()),
+              );
+            } else {
+              merged.push({ ...cur });
+            }
+          }
+          return merged;
+        };
+
         // Para cada día, calcular la duración por hora con la lógica correcta
-        // La lógica es:
-        // - Para hora H (ej: 13:00), buscar sesiones que NO habían terminado para (H-1):00
-        //   Y que empezaron ANTES de H:00
-        // - Si hay, calcular: min(session_end, H:00) - session_start
-        // - Si no hay, valor = 0
-        const hourlyByDay = new Map<number, number[]>(); // hour -> array of durations per day
+        const hourlyByDay = new Map<number, number[]>();
 
         for (const [day, daySessions] of sessionsByDay) {
-          // Ordenar sesiones por inicio
-          daySessions.sort((a, b) => a.start.getTime() - b.start.getTime());
+          const intervals = agentId ? daySessions : mergeIntervals(daySessions);
+          intervals.sort((a, b) => a.start.getTime() - b.start.getTime());
 
           for (let h = startHour; h <= endHour; h++) {
             // hourPrev = (H-1):00 - la hora anterior en punto
@@ -303,7 +386,7 @@ export class SessionSummariesService {
             // Buscar sesiones que:
             // 1. NO habían terminado para la hora anterior (session_end > hourPrev)
             // 2. Empezaron ANTES de la hora actual (session_start < hourCurrent)
-            const activeSessions = daySessions.filter(
+            const activeSessions = intervals.filter(
               (s) => s.end > hourPrev && s.start < hourCurrent,
             );
 
@@ -477,6 +560,7 @@ export class SessionSummariesService {
    * Obtiene el % de productividad PROMEDIO por hora para un contractor.
    * Calcula la productividad por hora usando la misma fórmula del ETL,
    * incluyendo ponderación por apps y browser (opción B).
+   * Si se pasa agentId, filtra por ese agente; si no, devuelve datos consolidados (todos los agentes).
    *
    * @param contractorId ID del contractor
    * @param from Fecha de inicio (opcional)
@@ -484,6 +568,7 @@ export class SessionSummariesService {
    * @param days Días hacia atrás (default: 30)
    * @param startHour Hora de inicio de jornada (default: 8)
    * @param endHour Hora de fin de jornada (default: 17)
+   * @param agentId ID del agente (opcional). Si se indica, solo se consideran beats y eventos de ese agente.
    * @returns Array de objetos con % de productividad promedio por hora
    */
   async getHourlyProductivity(
@@ -493,6 +578,7 @@ export class SessionSummariesService {
     days: number = 30,
     startHour: number = 8,
     endHour: number = 17,
+    agentId?: string,
   ): Promise<
     Array<{
       hour: number;
@@ -505,9 +591,12 @@ export class SessionSummariesService {
       avg_browser_score: number;
     }>
   > {
+    const effectiveAgentId =
+      agentId && agentId !== 'consolidated' ? agentId : undefined;
     const cacheKey =
       RedisKeys.hourlyProductivityByContractor(contractorId, from, to, days) +
-      `:hours:${startHour}-${endHour}:avg`;
+      `:hours:${startHour}-${endHour}:avg` +
+      (effectiveAgentId ? `:agent:${effectiveAgentId}` : '');
 
     return this.redisService.getOrSet(
       cacheKey,
@@ -524,6 +613,13 @@ export class SessionSummariesService {
           dateFilterBeats = `toDate(beat_timestamp) >= today() - ${days}`;
           dateFilterEvents = `toDate(timestamp) >= today() - ${days}`;
         }
+
+        const agentFilterBeats = effectiveAgentId
+          ? ` AND agent_id = '${effectiveAgentId}'`
+          : '';
+        const agentFilterEvents = effectiveAgentId
+          ? ` AND agent_id = '${effectiveAgentId}'`
+          : '';
 
         const activePercentExpr =
           '100.0 * b.active_beats / nullIf(b.total_beats, 0)';
@@ -570,7 +666,7 @@ export class SessionSummariesService {
               WHERE contractor_id = '${contractorId}'
                 AND ${dateFilterBeats}
                 AND toHour(beat_timestamp) >= ${startHour}
-                AND toHour(beat_timestamp) < ${endHour}
+                AND toHour(beat_timestamp) < ${endHour}${agentFilterBeats}
               GROUP BY contractor_id, workday, hour
             ) b
             LEFT JOIN (
@@ -586,7 +682,7 @@ export class SessionSummariesService {
               WHERE contractor_id = '${contractorId}'
                 AND ${dateFilterEvents}
                 AND toHour(timestamp) >= ${startHour}
-                AND toHour(timestamp) < ${endHour}
+                AND toHour(timestamp) < ${endHour}${agentFilterEvents}
                 AND JSONHas(payload, 'AppUsage')
               GROUP BY contractor_id, workday, hour
             ) app ON app.contractor_id = b.contractor_id
@@ -632,7 +728,7 @@ export class SessionSummariesService {
               WHERE contractor_id = '${contractorId}'
                 AND ${dateFilterEvents}
                 AND toHour(timestamp) >= ${startHour}
-                AND toHour(timestamp) < ${endHour}
+                AND toHour(timestamp) < ${endHour}${agentFilterEvents}
                 AND JSONHas(payload, 'browser')
               GROUP BY contractor_id, workday, hour
             ) web ON web.contractor_id = b.contractor_id

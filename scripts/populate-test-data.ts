@@ -67,6 +67,7 @@ interface ContractorConfig {
 
 interface Session {
   session_id: string;
+  agent_id: string;
   agent_session_id: string;
   start_time: Date;
   end_time: Date;
@@ -195,8 +196,9 @@ function generateDailyProductivityFactor(
   return Math.max(0.5, Math.min(1.5, factor)); // Limitar entre 0.5 y 1.5 para evitar extremos
 }
 
-// Generar sesiones distribuidas a lo largo del día
-// Ahora acepta múltiples agentes y genera sesiones para cada uno
+// Generar sesiones distribuidas a lo largo del día.
+// Cada VENTANA de tiempo se asigna a UN solo agente (round-robin), así cada agente tiene
+// sesiones en horarios DISTINTOS y al cambiar de agente en la UI se ven gráficas y listas diferentes.
 function generateSessionsForDay(
   day: Date,
   contractorId: string,
@@ -204,21 +206,21 @@ function generateSessionsForDay(
   totalBeats: number,
 ): Session[] {
   const sessions: Session[] = [];
-
-  // Horario de trabajo permitido: 8:00 AM - 5:00 PM (17:00) - el backend bloquea eventos fuera de este rango
   const workStartHour = 8;
-  const workEndHour = 17; // 5:00 PM
+  const workEndHour = 17;
+  const numAgents = agentIds.length;
 
-  // Crear 2-4 sesiones por día (simulando pausas, almuerzo, etc.)
-  const numSessions = 2 + Math.floor(Math.random() * 3); // 2-4 sesiones
-  const beatsPerSession = Math.floor(totalBeats / numSessions);
-  const remainingBeats = totalBeats - beatsPerSession * numSessions;
+  // 2–3 sesiones por agente, cada una en una ventana distinta
+  const sessionsPerAgent = 2 + Math.floor(Math.random() * 2);
+  const numWindows = numAgents * sessionsPerAgent;
+
+  const beatsPerWindow = Math.floor(totalBeats / numWindows);
+  const remainingBeats = totalBeats - beatsPerWindow * numWindows;
 
   let currentHour = workStartHour;
   let currentMinute = 0;
 
-  for (let i = 0; i < numSessions; i++) {
-    // Asegurar que la sesión no comience antes de las 8:00
+  for (let i = 0; i < numWindows; i++) {
     if (currentHour < workStartHour) {
       currentHour = workStartHour;
       currentMinute = 0;
@@ -227,71 +229,54 @@ function generateSessionsForDay(
     const sessionStart = new Date(day);
     sessionStart.setHours(currentHour, currentMinute, 0, 0);
 
-    // Duración de la sesión (en beats)
-    const sessionBeats = beatsPerSession + (i === 0 ? remainingBeats : 0);
+    const sessionBeats = beatsPerWindow + (i === 0 ? remainingBeats : 0);
     const sessionDurationMinutes = (sessionBeats * BEAT_INTERVAL_SECONDS) / 60;
 
     const sessionEnd = new Date(sessionStart);
     sessionEnd.setMinutes(sessionEnd.getMinutes() + sessionDurationMinutes);
 
-    // Asegurar que la sesión no termine después de las 17:00
     if (
       sessionEnd.getHours() > workEndHour ||
       (sessionEnd.getHours() === workEndHour && sessionEnd.getMinutes() > 0)
     ) {
-      // Ajustar el final de la sesión a las 17:00
       sessionEnd.setHours(workEndHour, 0, 0, 0);
-
-      // Recalcular los beats reales de la sesión ajustada
       const actualDurationMinutes =
         (sessionEnd.getTime() - sessionStart.getTime()) / (1000 * 60);
       const actualBeats = Math.floor(
         (actualDurationMinutes * 60) / BEAT_INTERVAL_SECONDS,
       );
-
-      // Crear una sesión compartida para todos los agentes
-      const sessionId = generateId('session');
-
-      // Generar una agent_session para cada agente
-      for (let i = 0; i < agentIds.length; i++) {
-        sessions.push({
-          session_id: sessionId,
-          agent_session_id: generateId('agent-session'),
-          start_time: sessionStart,
-          end_time: sessionEnd,
-          beats: actualBeats,
-        });
-      }
-
-      // No hay más sesiones después de las 17:00
-      break;
-    }
-
-    // Crear una sesión compartida para todos los agentes
-    const sessionId = generateId('session');
-
-    // Generar una agent_session para cada agente
-    for (let i = 0; i < agentIds.length; i++) {
+      // Una sola sesión para esta ventana, asignada a un único agente
+      const agentIndex = i % numAgents;
       sessions.push({
-        session_id: sessionId,
+        session_id: generateId('session'),
+        agent_id: agentIds[agentIndex],
         agent_session_id: generateId('agent-session'),
         start_time: sessionStart,
         end_time: sessionEnd,
-        beats: sessionBeats,
+        beats: actualBeats,
       });
+      break;
     }
 
-    // Agregar pausa entre sesiones (30-90 minutos)
-    if (i < numSessions - 1) {
-      const pauseMinutes = 30 + Math.floor(Math.random() * 60);
+    // Una ventana = una sesión = un agente (round-robin)
+    const agentIndex = i % numAgents;
+    sessions.push({
+      session_id: generateId('session'),
+      agent_id: agentIds[agentIndex],
+      agent_session_id: generateId('agent-session'),
+      start_time: sessionStart,
+      end_time: sessionEnd,
+      beats: sessionBeats,
+    });
+
+    if (i < numWindows - 1) {
+      const pauseMinutes = 25 + Math.floor(Math.random() * 35);
       currentHour = sessionEnd.getHours();
       currentMinute = sessionEnd.getMinutes() + pauseMinutes;
       if (currentMinute >= 60) {
         currentHour += Math.floor(currentMinute / 60);
         currentMinute = currentMinute % 60;
       }
-
-      // Si la próxima sesión comenzaría después de las 17:00, no crear más sesiones
       if (
         currentHour > workEndHour ||
         (currentHour === workEndHour && currentMinute > 0)
@@ -1152,105 +1137,42 @@ async function populateTestData() {
         sessionsBySessionId.get(session.session_id)!.push(session);
       }
 
-      // Procesar cada sesión lógica (puede tener múltiples agent_sessions)
+      // Procesar cada sesión (cada una tiene un solo agente: session_id único por agente por ventana)
       for (const [sessionId, agentSessions] of sessionsBySessionId) {
-        const firstSession = agentSessions[0];
-        const sessionStart = firstSession.start_time;
+        const session = agentSessions[0];
+        const sessionStart = session.start_time;
         let currentTimestamp = new Date(sessionStart);
+        const agentId = session.agent_id;
 
-        // Crear mapeo explícito entre agentId y agentSession
-        // Las sesiones se generan en el mismo orden que los agentIds
-        const agentToSessionMap = new Map<string, Session>();
-        for (let i = 0; i < agentIds.length && i < agentSessions.length; i++) {
-          agentToSessionMap.set(agentIds[i], agentSessions[i]);
-        }
+        // Un evento por beat, solo para el agente de esta sesión
+        for (let beatIndex = 0; beatIndex < session.beats; beatIndex++) {
+          const payload = generatePayload(
+            contractor.productivity,
+            beatIndex,
+            session.beats,
+            dailyProductivityFactor,
+          );
 
-        // Determinar qué agente está "activo" inicialmente en esta sesión
-        // El agente principal (índice 0) tiene más probabilidad de estar activo
-        let currentActiveAgentIndex =
-          agentIds.length === 1
-            ? 0
-            : Math.random() < 0.6
-              ? 0
-              : Math.floor(Math.random() * (agentIds.length - 1)) + 1;
-        let currentActiveAgentId = agentIds[currentActiveAgentIndex];
+          const eventId = generateId('event');
+          eventsBatch.push({
+            event_id: eventId,
+            contractor_id: contractor.contractor_id,
+            agent_id: agentId,
+            session_id: sessionId,
+            agent_session_id: session.agent_session_id,
+            timestamp: formatDateForClickHouse(currentTimestamp),
+            payload: payload,
+            created_at: formatDateForClickHouse(currentTimestamp),
+          });
 
-        // Generar eventos para cada beat de la sesión
-        for (let beatIndex = 0; beatIndex < firstSession.beats; beatIndex++) {
-          // Permitir cambio de agente activo durante la sesión (simula que el usuario puede cambiar de máquina)
-          // Probabilidad del 2% por beat de cambiar de agente (aproximadamente cada 5-10 minutos)
-          if (agentIds.length > 1 && Math.random() < 0.02) {
-            // Cambiar a otro agente aleatorio
-            const newIndex = Math.floor(Math.random() * agentIds.length);
-            if (newIndex !== currentActiveAgentIndex) {
-              currentActiveAgentIndex = newIndex;
-              currentActiveAgentId = agentIds[currentActiveAgentIndex];
-            }
-          }
+          const currentCount =
+            contractorEventsCount.get(contractor.contractor_id) || 0;
+          contractorEventsCount.set(contractor.contractor_id, currentCount + 1);
 
-          // Para cada agente, generar un evento en este beat
-          for (let agentIndex = 0; agentIndex < agentIds.length; agentIndex++) {
-            const agentId = agentIds[agentIndex];
-            const isActiveAgent = agentId === currentActiveAgentId;
-
-            // Obtener la agent_session correspondiente a este agente
-            const agentSession =
-              agentToSessionMap.get(agentId) ||
-              agentSessions[agentIndex % agentSessions.length];
-
-            // Si este agente es el activo, generar payload normal
-            // Si no, generar payload idle (simula que está en segundo plano)
-            let payload: string;
-            if (isActiveAgent) {
-              payload = generatePayload(
-                contractor.productivity,
-                beatIndex,
-                firstSession.beats,
-                dailyProductivityFactor,
-              );
-            } else {
-              // Agente inactivo: generar payload idle (sin inputs, sin actividad)
-              payload = JSON.stringify({
-                Keyboard: {
-                  InactiveTime: Math.random() * 0.5,
-                  InputsCount: 0,
-                },
-                Mouse: {
-                  InactiveTime: Math.random() * 0.1,
-                  ClicksCount: 0,
-                },
-                IdleTime: 12 + Math.random() * 3, // 12-15s idle
-                AppUsage: {},
-                browser: {},
-              });
-            }
-
-            const eventId = generateId('event');
-            eventsBatch.push({
-              event_id: eventId,
-              contractor_id: contractor.contractor_id,
-              agent_id: agentId,
-              session_id: sessionId,
-              agent_session_id: agentSession.agent_session_id,
-              timestamp: formatDateForClickHouse(currentTimestamp),
-              payload: payload,
-              created_at: formatDateForClickHouse(currentTimestamp),
-            });
-
-            const currentCount =
-              contractorEventsCount.get(contractor.contractor_id) || 0;
-            contractorEventsCount.set(
-              contractor.contractor_id,
-              currentCount + 1,
-            );
-          }
-
-          // Insertar en lotes cuando se alcance el tamaño límite (await para controlar el flujo)
           if (eventsBatch.length >= BATCH_SIZE) {
             const batchSize = eventsBatch.length;
             try {
               await flushBatches();
-              // Log silencioso de inserción exitosa
               process.stdout.write(
                 `\r   ✅ Lote insertado: ${batchSize.toLocaleString()} eventos | ` +
                   `Total: ${totalInsertedEvents.toLocaleString()} eventos | ` +
@@ -1262,47 +1184,37 @@ async function populateTestData() {
             }
           }
 
-          // Avanzar 15 segundos
           currentTimestamp = new Date(
             currentTimestamp.getTime() + BEAT_INTERVAL_SECONDS * 1000,
           );
         }
 
-        // Sesión RAW (solo una vez por session_id, no por agent_session)
         const sessionEnd = new Date(currentTimestamp);
         const sessionDuration = Math.floor(
           (sessionEnd.getTime() - sessionStart.getTime()) / 1000,
         );
 
-        // Insertar sesión solo una vez (no duplicar por cada agente)
-        if (!sessionsBatch.some((s) => s.session_id === sessionId)) {
-          sessionsBatch.push({
-            session_id: sessionId,
-            contractor_id: contractor.contractor_id,
-            session_start: formatDateForClickHouse(sessionStart),
-            session_end: formatDateForClickHouse(sessionEnd),
-            total_duration: sessionDuration,
-            created_at: formatDateForClickHouse(sessionStart),
-            updated_at: formatDateForClickHouse(sessionEnd),
-          });
-        }
+        sessionsBatch.push({
+          session_id: sessionId,
+          contractor_id: contractor.contractor_id,
+          session_start: formatDateForClickHouse(sessionStart),
+          session_end: formatDateForClickHouse(sessionEnd),
+          total_duration: sessionDuration,
+          created_at: formatDateForClickHouse(sessionStart),
+          updated_at: formatDateForClickHouse(sessionEnd),
+        });
 
-        // Agent Session RAW (una por cada agente)
-        for (let i = 0; i < agentIds.length && i < agentSessions.length; i++) {
-          const agentId = agentIds[i];
-          const agentSession = agentSessions[i];
-          agentSessionsBatch.push({
-            agent_session_id: agentSession.agent_session_id,
-            contractor_id: contractor.contractor_id,
-            agent_id: agentId,
-            session_id: sessionId,
-            session_start: formatDateForClickHouse(sessionStart),
-            session_end: formatDateForClickHouse(sessionEnd),
-            total_duration: sessionDuration,
-            created_at: formatDateForClickHouse(sessionStart),
-            updated_at: formatDateForClickHouse(sessionEnd),
-          });
-        }
+        agentSessionsBatch.push({
+          agent_session_id: session.agent_session_id,
+          contractor_id: contractor.contractor_id,
+          agent_id: agentId,
+          session_id: sessionId,
+          session_start: formatDateForClickHouse(sessionStart),
+          session_end: formatDateForClickHouse(sessionEnd),
+          total_duration: sessionDuration,
+          created_at: formatDateForClickHouse(sessionStart),
+          updated_at: formatDateForClickHouse(sessionEnd),
+        });
       }
     }
 

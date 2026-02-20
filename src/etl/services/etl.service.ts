@@ -363,9 +363,8 @@ export class EtlService {
               50.0
             )
           )) AS productivity_score,
-          -- Maps vacíos por defecto (se pueden poblar en un paso posterior si se necesitan)
-          map() AS app_usage,
-          map() AS browser_usage,
+          ifNull(any(app_map.app_usage), map()) AS app_usage,
+          ifNull(any(browser_map.browser_usage), map()) AS browser_usage,
           now() AS created_at
         FROM (
           SELECT
@@ -379,7 +378,7 @@ export class EtlService {
           WHERE workday = toDate('${dayStr}')
           GROUP BY contractor_id, workday, beat_timestamp
         ) ca
-        -- JOIN ligero para apps: solo calcula totales ponderados (sin crear Maps)
+        -- JOIN para productivity_score: totales ponderados por día
         LEFT JOIN (
           SELECT 
             contractor_id,
@@ -392,7 +391,26 @@ export class EtlService {
           WHERE toDate(timestamp) = toDate('${dayStr}')
           GROUP BY contractor_id, workday
         ) app ON app.contractor_id = ca.contractor_id AND app.workday = ca.workday
-        -- JOIN ligero para browser: solo calcula totales ponderados (sin crear Maps)
+        -- JOIN para app_usage Map: segundos por app por (contractor_id, workday)
+        LEFT JOIN (
+          SELECT
+            contractor_id,
+            workday,
+            mapFromArrays(groupArray(app), groupArray(toUInt64(round(sec)))) AS app_usage
+          FROM (
+            SELECT
+              contractor_id,
+              toDate(timestamp) AS workday,
+              app,
+              sum(JSONExtractFloat(payload, 'AppUsage', app)) AS sec
+            FROM events_raw
+            ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app
+            WHERE toDate(timestamp) = toDate('${dayStr}')
+            GROUP BY contractor_id, workday, app
+          )
+          GROUP BY contractor_id, workday
+        ) app_map ON app_map.contractor_id = ca.contractor_id AND app_map.workday = ca.workday
+        -- JOIN para productivity_score: totales ponderados browser por día
         LEFT JOIN (
           SELECT 
             contractor_id,
@@ -432,6 +450,25 @@ export class EtlService {
           WHERE toDate(timestamp) = toDate('${dayStr}')
           GROUP BY contractor_id, workday
         ) web ON web.contractor_id = ca.contractor_id AND web.workday = ca.workday
+        -- JOIN para browser_usage Map: segundos por dominio por (contractor_id, workday)
+        LEFT JOIN (
+          SELECT
+            contractor_id,
+            workday,
+            mapFromArrays(groupArray(dc), groupArray(toUInt64(round(sec)))) AS browser_usage
+          FROM (
+            SELECT
+              contractor_id,
+              toDate(timestamp) AS workday,
+              dc,
+              sum(JSONExtractFloat(payload, 'browser', dc)) AS sec
+            FROM events_raw
+            ARRAY JOIN JSONExtractKeys(payload, 'browser') AS dc
+            WHERE toDate(timestamp) = toDate('${dayStr}')
+            GROUP BY contractor_id, workday, dc
+          )
+          GROUP BY contractor_id, workday
+        ) browser_map ON browser_map.contractor_id = ca.contractor_id AND browser_map.workday = ca.workday
         GROUP BY ca.contractor_id, ca.workday
       `;
 
@@ -477,34 +514,34 @@ export class EtlService {
 
   /**
    * Genera resúmenes de sesión desde contractor_activity_15s.
-   * Agrupa por session_id, calcula productividad con fórmula multi-factor.
+   * Una fila por (session_id, agent_id). Agrupa por ambos y calcula productividad con fórmula multi-factor.
    */
   async processActivityToSessionSummary(
     sessionId?: string,
   ): Promise<SessionSummaryDto[]> {
     try {
-      // 1) Insertar resúmenes solo para sesiones que no existen aún (idempotencia sin DELETE)
-      //    Calculamos S_active, S_inputs, S_apps y S_browser en SQL y luego el productivity_score
+      // Idempotencia: excluir pares (session_id, agent_id) que ya están en session_summary.
+      // ClickHouse no permite subconsultas correlacionadas (NOT EXISTS con a.session_id), usamos NOT IN con tupla.
+      const notInClause = `AND (a.session_id, coalesce(a.agent_id, '')) NOT IN (
+        SELECT session_id, coalesce(agent_id, '') FROM session_summary
+      )`;
       const sessionFilter = sessionId
-        ? `WHERE a.session_id = '${sessionId}' AND a.session_id NOT IN (SELECT DISTINCT session_id FROM session_summary)`
+        ? `WHERE a.session_id = '${sessionId}' ${notInClause}`
         : `WHERE a.session_id IN (
-             SELECT DISTINCT session_id 
-             FROM contractor_activity_15s 
-             WHERE session_id IS NOT NULL
-           ) 
-           AND a.session_id NOT IN (SELECT DISTINCT session_id FROM session_summary)`;
+             SELECT DISTINCT session_id FROM contractor_activity_15s WHERE session_id IS NOT NULL
+           ) ${notInClause}`;
 
       const insertQuery = `
-        INSERT INTO session_summary
+        INSERT INTO session_summary (session_id, contractor_id, agent_id, session_start, session_end, total_seconds, active_seconds, idle_seconds, productivity_score, created_at)
         SELECT
           a.session_id,
           any(a.contractor_id) AS contractor_id,
+          any(a.agent_id) AS agent_id,
           min(a.beat_timestamp) AS session_start,
           max(a.beat_timestamp) AS session_end,
           count() * 15 AS total_seconds,
           sum(if(a.is_idle = 0, 15, 0)) AS active_seconds,
           sum(if(a.is_idle = 1, 15, 0)) AS idle_seconds,
-          -- Score final (sin exponer sub-scores)
           least(100.0, greatest(0.0,
             0.35 * (100.0 * sum(if(a.is_idle = 0, 1, 0)) / nullIf(count(), 0)) +
             0.20 * least(100.0, 15.0 * ln(1 + (((sum(a.keyboard_count) + sum(a.mouse_clicks)) / nullIf(count() * 15 / 60, 0)) / 2.0))) +
@@ -522,16 +559,18 @@ export class EtlService {
         LEFT JOIN (
           SELECT 
             e.session_id,
+            e.agent_id,
             sum(JSONExtractFloat(e.payload, 'AppUsage', app) * ifNull(d.weight, 0.5)) AS weighted_seconds,
             sum(JSONExtractFloat(e.payload, 'AppUsage', app)) AS total_seconds
           FROM events_raw e
           ARRAY JOIN JSONExtractKeys(e.payload, 'AppUsage') AS app
           LEFT JOIN apps_dimension d ON d.name = app
-          GROUP BY e.session_id
-        ) app ON app.session_id = a.session_id
+          GROUP BY e.session_id, e.agent_id
+        ) app ON app.session_id = a.session_id AND coalesce(app.agent_id, '') = coalesce(a.agent_id, '')
         LEFT JOIN (
           SELECT 
             e.session_id,
+            e.agent_id,
             sum(
               JSONExtractFloat(e.payload, 'browser', dc) *
               ifNull(
@@ -564,20 +603,20 @@ export class EtlService {
             WHERE right(domain, 1) = '.'
           ) dp
           ARRAY JOIN JSONExtractKeys(e.payload, 'browser') AS dc
-          GROUP BY e.session_id
-        ) web ON web.session_id = a.session_id
+          GROUP BY e.session_id, e.agent_id
+        ) web ON web.session_id = a.session_id AND coalesce(web.agent_id, '') = coalesce(a.agent_id, '')
         ${sessionFilter}
-        GROUP BY a.session_id
+        GROUP BY a.session_id, a.agent_id
         SETTINGS max_partitions_per_insert_block=1000
       `;
 
       await this.clickHouseService.command(insertQuery);
 
-      // 3) Devolver filas insertadas
       const selectQuery = `
         SELECT 
           session_id,
           contractor_id,
+          agent_id,
           session_start,
           session_end,
           total_seconds,
