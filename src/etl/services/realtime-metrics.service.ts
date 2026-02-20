@@ -908,11 +908,130 @@ export class RealtimeMetricsService {
     };
   }
 
+  private async calculateMetricsBulkForDay(
+    contractorIds: string[] | null,
+    workday: Date,
+  ): Promise<
+    Map<
+      string,
+      {
+        total_beats: number;
+        active_beats: number;
+        idle_beats: number;
+        active_percentage: number;
+        total_keyboard_inputs: number;
+        total_mouse_clicks: number;
+        total_session_time_seconds: number;
+        effective_work_seconds: number;
+        avg_keyboard_per_min: number;
+        avg_mouse_per_min: number;
+      }
+    >
+  > {
+    const workdayStr = workday.toISOString().split('T')[0];
+    const filterClause =
+      contractorIds !== null && contractorIds.length > 0
+        ? `AND contractor_id IN (${contractorIds.map((id) => `'${id}'`).join(',')})`
+        : '';
+
+    try {
+      const query = `
+        SELECT
+          contractor_id,
+          count()                                                         AS total_beats,
+          countIf(is_active_consolidated = 1)                            AS active_beats,
+          countIf(is_active_consolidated = 0)                            AS idle_beats,
+          100.0 * countIf(is_active_consolidated = 1) / nullIf(count(), 0)
+                                                                         AS active_percentage,
+          sum(keyboard_count)                                            AS total_keyboard_inputs,
+          sum(mouse_clicks)                                              AS total_mouse_clicks,
+          count() * 15                                                   AS total_session_time_seconds,
+          countIf(is_active_consolidated = 1) * 15                      AS effective_work_seconds
+        FROM (
+          SELECT
+            contractor_id,
+            beat_timestamp,
+            toUInt8(countIf(is_idle = 0) > 0) AS is_active_consolidated,
+            sum(keyboard_count)                AS keyboard_count,
+            sum(mouse_clicks)                  AS mouse_clicks
+          FROM contractor_activity_15s
+          WHERE toDate(beat_timestamp) = '${workdayStr}'
+            ${filterClause}
+          GROUP BY contractor_id, beat_timestamp
+        )
+        GROUP BY contractor_id
+        HAVING total_beats > 0
+      `;
+
+      const results = await this.clickHouseService.query<{
+        contractor_id: string;
+        total_beats: number;
+        active_beats: number;
+        idle_beats: number;
+        active_percentage: number;
+        total_keyboard_inputs: number;
+        total_mouse_clicks: number;
+        total_session_time_seconds: number;
+        effective_work_seconds: number;
+      }>(query);
+
+      const metricsMap = new Map<
+        string,
+        {
+          total_beats: number;
+          active_beats: number;
+          idle_beats: number;
+          active_percentage: number;
+          total_keyboard_inputs: number;
+          total_mouse_clicks: number;
+          total_session_time_seconds: number;
+          effective_work_seconds: number;
+          avg_keyboard_per_min: number;
+          avg_mouse_per_min: number;
+        }
+      >();
+
+      for (const row of results) {
+        const totalBeats = Number(row.total_beats) || 0;
+        const activeBeats = Number(row.active_beats) || 0;
+        const totalKeyboard = Number(row.total_keyboard_inputs) || 0;
+        const totalMouse = Number(row.total_mouse_clicks) || 0;
+        const minutes = totalBeats > 0 ? (totalBeats * 15) / 60 : 0;
+
+        metricsMap.set(row.contractor_id, {
+          total_beats: totalBeats,
+          active_beats: activeBeats,
+          idle_beats: Number(row.idle_beats) || 0,
+          active_percentage:
+            totalBeats > 0 ? (activeBeats / totalBeats) * 100 : 0,
+          total_keyboard_inputs: totalKeyboard,
+          total_mouse_clicks: totalMouse,
+          total_session_time_seconds: totalBeats * 15,
+          effective_work_seconds: activeBeats * 15,
+          avg_keyboard_per_min: minutes > 0 ? totalKeyboard / minutes : 0,
+          avg_mouse_per_min: minutes > 0 ? totalMouse / minutes : 0,
+        });
+      }
+
+      return metricsMap;
+    } catch (error) {
+      this.logger.error(
+        `Error en calculateMetricsBulkForDay: ${error.message}`,
+      );
+      return new Map();
+    }
+  }
+
   /**
    * Obtiene métricas en tiempo real de todos los contratistas que tienen métricas para un día específico.
    * Solo devuelve contratistas que tienen datos (total_beats > 0).
    * Enriquece los datos con información del contractor (nombre, email, job_position, country, client, team).
    * El caché será manejado por Redis.
+   *
+   * OPTIMIZADO: reemplaza el patrón N+1 por 3 queries bulk:
+   *   1. calculateMetricsBulkForDay()            → beats de todos los contractors (1 query)
+   *   2. getAppUsageAggregatedForMultiple()       → app usage en una sola query
+   *   3. getBrowserUsageAggregatedForMultiple()   → browser usage en una sola query
    *
    * @param workday Fecha del día (por defecto: hoy)
    * @param filters Filtros opcionales para filtrar contractors
@@ -937,54 +1056,92 @@ export class RealtimeMetricsService {
     return this.redisService.getOrSet(
       cacheKey,
       async () => {
-        let contractorIds: string[] = [];
+        // Paso 1: Obtener IDs filtrados (solo si hay filtros activos)
+        let preFilteredIds: string[] | null = null;
         if (
           filters &&
           Object.values(filters).some((v) => v !== undefined && v !== null)
         ) {
-          contractorIds = await this.getFilteredContractorIds(filters);
-          if (contractorIds.length === 0) {
+          preFilteredIds = await this.getFilteredContractorIds(filters);
+          if (preFilteredIds.length === 0) {
             return [];
           }
         }
 
-        let contractorsQuery = `
-          SELECT DISTINCT contractor_id
-          FROM contractor_activity_15s
-          WHERE toDate(beat_timestamp) = '${workdayStr}'
-        `;
+        // Paso 2 (1 query): Agrega beats de todos los contractors con consolidación multi-agente.
+        // preFilteredIds = null → consulta todos los contractors activos en el día.
+        const beatMetricsMap = await this.calculateMetricsBulkForDay(
+          preFilteredIds,
+          workdayDate,
+        );
 
-        if (contractorIds.length > 0) {
-          const contractorIdsList = contractorIds
-            .map((id) => `'${id}'`)
-            .join(',');
-          contractorsQuery += ` AND contractor_id IN (${contractorIdsList})`;
-        }
-
-        const contractors = await this.clickHouseService.query<{
-          contractor_id: string;
-        }>(contractorsQuery);
-
-        if (contractors.length === 0) {
+        if (beatMetricsMap.size === 0) {
           return [];
         }
 
-        const metricsPromises = contractors.map((contractor) =>
-          this.getRealtimeMetrics(contractor.contractor_id, workdayDate),
-        );
+        const activeContractorIds = Array.from(beatMetricsMap.keys());
 
-        const allMetrics = await Promise.all(metricsPromises);
+        // Paso 3+4 (2 queries en paralelo): App y Browser usage para todos los contractors activos.
+        const [appUsageMap, browserUsageMap] = await Promise.all([
+          this.usageDataService.getAppUsageAggregatedForMultiple(
+            activeContractorIds,
+            workdayDate,
+            workdayDate,
+          ),
+          this.usageDataService.getBrowserUsageAggregatedForMultiple(
+            activeContractorIds,
+            workdayDate,
+            workdayDate,
+          ),
+        ]);
 
-        const metricsWithData = allMetrics.filter(
-          (metric) => metric.total_beats > 0,
-        );
+        // Paso 5: Combinar y calcular productivity_score por contractor
+        const allMetrics = activeContractorIds.map((contractorId) => {
+          const beatMetrics = beatMetricsMap.get(contractorId)!;
+          const appUsage = appUsageMap.get(contractorId) || [];
+          const browserUsage = browserUsageMap.get(contractorId) || [];
+          const minutes =
+            beatMetrics.total_beats > 0
+              ? (beatMetrics.total_beats * 15) / 60
+              : 0;
 
-        if (metricsWithData.length === 0) {
+          const productivity_score =
+            this.activityToDailyMetricsTransformer.calculateProductivityScore(
+              beatMetrics.active_beats,
+              beatMetrics.total_beats,
+              beatMetrics.total_keyboard_inputs,
+              beatMetrics.total_mouse_clicks,
+              minutes,
+              appUsage,
+              browserUsage,
+            );
+
+          return {
+            contractor_id: contractorId,
+            workday: workdayStr,
+            ...beatMetrics,
+            productivity_score,
+            app_usage: appUsage.map((a) => ({
+              appName: a.appName,
+              seconds: a.seconds,
+              type: a.type,
+            })),
+            browser_usage: browserUsage.map((b) => ({
+              domain: b.domain,
+              seconds: b.seconds,
+            })),
+            is_realtime: true,
+            calculated_at: new Date().toISOString(),
+          };
+        });
+
+        if (allMetrics.length === 0) {
           return [];
         }
 
+        // Paso 6: Enriquecer con información del contractor (nombre, client, team, etc.)
         const enrichedMetrics =
-          await this.enrichMetricsWithContractorInfo(metricsWithData);
+          await this.enrichMetricsWithContractorInfo(allMetrics);
 
         return enrichedMetrics;
       },
