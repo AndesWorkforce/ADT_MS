@@ -21,11 +21,12 @@ interface SessionEtlTriggerPayload {
  * el procesamiento ETL de resumen de sesión en BullMQ.
  *
  * Flujo:
- *   EVENTS_MS (session timer / fin de turno)
+ *   USER_MS (al cerrar sesión)
  *     → NATS event: etl.session.trigger
  *       → EtlTriggerListener (aquí)
- *         → EtlQueueService.addSessionSummaryJob()
- *           → SessionSummaryProcessor → EtlService.processActivityToSessionSummary()
+ *         → EtlQueueService.addFullEtlOnSessionCloseJob()
+ *           → SessionCloseEtlProcessor → EtlService.runFullEtlForContractorOnSessionClose()
+ *             → process-events → process-daily-metrics → process-session-summaries (solo ese contratista)
  *
  * Requisitos satisfechos:
  * ✅ ETL se invoca automáticamente al cerrar una sesión
@@ -71,13 +72,13 @@ export class EtlTriggerListener {
     }
 
     try {
-      const jobId = await this.etlQueueService.addSessionSummaryJob(
+      const jobId = await this.etlQueueService.addFullEtlOnSessionCloseJob(
         sessionId,
         contractorId,
       );
 
       this.logger.log(
-        `✅ [EtlTrigger] Session summary job enqueued — ` +
+        `✅ [EtlTrigger] Full ETL on session close job enqueued — ` +
           `session=${sessionId} contractor=${contractorId} jobId=${jobId}`,
       );
     } catch (error) {

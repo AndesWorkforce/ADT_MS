@@ -57,6 +57,7 @@ export class DailyMetricsProcessor extends WorkerHost {
         workdayDate,
         from,
         to,
+        contractorIds,
       );
 
       await job.updateProgress(100);

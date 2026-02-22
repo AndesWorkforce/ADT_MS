@@ -78,6 +78,7 @@ export interface EtlJobData extends BaseJobData {
     | JobType.EVENTS_TO_ACTIVITY_FORCE
     | JobType.DAILY_METRICS
     | JobType.SESSION_SUMMARIES
+    | JobType.FULL_ETL_ON_SESSION_CLOSE
     | JobType.APP_USAGE;
   fromDate?: Date;
   toDate?: Date;

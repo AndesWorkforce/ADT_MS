@@ -13,6 +13,7 @@ import {
   InactivityScanProcessor,
   DailyMetricsProcessor,
   SessionSummaryProcessor,
+  SessionCloseEtlProcessor,
 } from './processors';
 import {
   EventQueueService,
@@ -71,6 +72,9 @@ import {
           BullModule.registerQueue({
             name: QUEUE_NAMES.ETL_SESSION_SUMMARIES,
           }),
+          BullModule.registerQueue({
+            name: QUEUE_NAMES.ETL_SESSION_CLOSE,
+          }),
         ]
       : []),
 
@@ -114,7 +118,12 @@ import {
 
     // ✅ FASE 4: Processors y servicio ETL (condicional)
     ...(envs.queues.useEtlQueue
-      ? [DailyMetricsProcessor, SessionSummaryProcessor, EtlQueueService]
+      ? [
+          DailyMetricsProcessor,
+          SessionSummaryProcessor,
+          SessionCloseEtlProcessor,
+          EtlQueueService,
+        ]
       : []),
   ],
   exports: [
