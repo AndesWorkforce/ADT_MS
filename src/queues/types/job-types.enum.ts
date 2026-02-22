@@ -17,5 +17,6 @@ export enum JobType {
   EVENTS_TO_ACTIVITY_FORCE = 'events-to-activity-force',
   DAILY_METRICS = 'daily-metrics',
   SESSION_SUMMARIES = 'session-summaries',
+  FULL_ETL_ON_SESSION_CLOSE = 'full-etl-on-session-close',
   APP_USAGE = 'app-usage',
 }

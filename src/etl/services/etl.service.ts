@@ -29,10 +29,12 @@ export class EtlService {
   /**
    * Procesa eventos RAW y genera contractor_activity_15s.
    * Lee desde events_raw y guarda en contractor_activity_15s.
+   * @param contractorId - Si se pasa, procesa solo ese contratista (para flujo trigger al cerrar sesión)
    */
   async processEventsToActivity(
     fromDate?: Date,
     toDate?: Date,
+    contractorId?: string,
   ): Promise<number> {
     try {
       // Normalizar rango por defecto para evitar procesar demasiado si no se especifica
@@ -62,20 +64,27 @@ export class EtlService {
       ) {
         const dayStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
 
-        // Verificar existencia en destino
+        // Verificar existencia en destino (por contratista si se especifica)
+        const contractorFilter = contractorId
+          ? ` AND contractor_id = '${contractorId}'`
+          : '';
         const exists = await this.clickHouseService.query<{ cnt: number }>(`
           SELECT count() AS cnt 
           FROM contractor_activity_15s
           WHERE workday = toDate('${dayStr}')
+          ${contractorFilter}
         `);
         if ((exists[0]?.cnt || 0) > 0) {
           this.logger.log(
-            `⏭️ Skipping contractor_activity_15s for ${dayStr} (already populated)`,
+            `⏭️ Skipping contractor_activity_15s for ${dayStr}${contractorId ? ` contractor=${contractorId}` : ''} (already populated)`,
           );
           continue;
         }
 
-        // Insertar solo ese día desde events_raw
+        // Insertar solo ese día desde events_raw (filtro por contratista si se especifica)
+        const eventsFilter = contractorId
+          ? ` AND contractor_id = '${contractorId}'`
+          : '';
         const insertQueryPerDay = `
           INSERT INTO contractor_activity_15s
           SELECT
@@ -95,6 +104,7 @@ export class EtlService {
             now() AS created_at
           FROM events_raw
           WHERE toDate(timestamp) = toDate('${dayStr}')
+          ${eventsFilter}
         `;
         await this.clickHouseService.command(insertQueryPerDay);
 
@@ -105,6 +115,7 @@ export class EtlService {
           SELECT count() AS cnt
           FROM events_raw
           WHERE toDate(timestamp) = toDate('${dayStr}')
+          ${eventsFilter}
         `);
         const estimatedInserted = Number(insertedRes[0]?.cnt || 0);
 
@@ -115,6 +126,7 @@ export class EtlService {
           SELECT count() AS cnt
           FROM contractor_activity_15s
           WHERE workday = toDate('${dayStr}')
+          ${contractorFilter}
         `);
         const actualCount = Number(destCountRes[0]?.cnt || 0);
 
@@ -141,10 +153,12 @@ export class EtlService {
   /**
    * Fuerza el reprocesamiento de eventos RAW → contractor_activity_15s.
    * Borra los datos existentes del rango y vuelve a insertar (DELETE + INSERT SELECT).
+   * @param contractorId - Si se pasa, procesa solo ese contratista
    */
   async processEventsToActivityForce(
     fromDate?: Date,
     toDate?: Date,
+    contractorId?: string,
   ): Promise<number> {
     try {
       // Rango por defecto: últimas 2 horas (evitar borrar demasiado por accidente)
@@ -163,18 +177,24 @@ export class EtlService {
       const fromDay = fromDate ? fromStr!.split(' ')[0] : null;
       const toDay = toDate ? toStr!.split(' ')[0] : null;
 
-      // 1) Borrar por partición (workday) en el rango
+      const contractorFilter = contractorId
+        ? ` AND contractor_id = '${contractorId}'`
+        : '';
+
+      // 1) Borrar por partición (workday) en el rango (y contratista si aplica)
       await this.clickHouseService.command(`
         ALTER TABLE contractor_activity_15s DELETE
         WHERE 1=1
           ${fromDay ? `AND workday >= toDate('${fromDay}')` : ''}
           ${toDay ? `AND workday <= toDate('${toDay}')` : ''}
+          ${contractorFilter}
       `);
 
-      // 2) Insertar con INSERT SELECT usando filtros de timestamp
+      // 2) Insertar con INSERT SELECT usando filtros de timestamp (y contratista si aplica)
       const filters =
         (fromStr ? ` AND timestamp >= '${fromStr}'` : '') +
-        (toStr ? ` AND timestamp <= '${toStr}'` : '');
+        (toStr ? ` AND timestamp <= '${toStr}'` : '') +
+        contractorFilter;
 
       const insertQuery = `
         INSERT INTO contractor_activity_15s
@@ -207,6 +227,7 @@ export class EtlService {
         WHERE 1=1
         ${fromStr ? ` AND beat_timestamp >= '${fromStr}'` : ''}
         ${toStr ? ` AND beat_timestamp <= '${toStr}'` : ''}
+        ${contractorFilter}
       `);
 
       const count = Number(countRes[0]?.cnt || 0);
@@ -229,11 +250,13 @@ export class EtlService {
    * @param workday - Día específico a procesar (opcional, por defecto: día anterior)
    * @param fromDate - Fecha de inicio del rango (opcional, para procesar múltiples días)
    * @param toDate - Fecha de fin del rango (opcional, para procesar múltiples días)
+   * @param contractorIds - Si se pasa, procesa solo esos contratistas (para flujo trigger al cerrar sesión)
    */
   async processActivityToDailyMetrics(
     workday?: Date,
     fromDate?: Date,
     toDate?: Date,
+    contractorIds?: string[],
   ): Promise<ContractorDailyMetricsDto[]> {
     try {
       // Asegurar que las columnas app_usage y browser_usage existan (migración)
@@ -278,42 +301,54 @@ export class EtlService {
         days.push(dayStr);
       }
 
+      const contractorFilter = contractorIds?.length
+        ? ` AND contractor_id IN (${contractorIds.map((c) => `'${c}'`).join(',')})`
+        : '';
+
       const allMetrics: ContractorDailyMetricsDto[] = [];
       for (const dayStr of days) {
-        // Si ya existen métricas para el día, no recalcular
-        const exists = await this.clickHouseService.query<{ cnt: number }>(`
-          SELECT count() AS cnt FROM contractor_daily_metrics WHERE workday = toDate('${dayStr}')
-        `);
-        if ((exists[0]?.cnt || 0) > 0) {
-          this.logger.log(
-            `⏭️ Skipping contractor_daily_metrics for ${dayStr} (already populated)`,
-          );
-          // Cargar y acumular métricas existentes para retorno
-          const existing = await this.clickHouseService
-            .query<ContractorDailyMetricsDto>(`
-            SELECT 
-              contractor_id,
-              workday,
-              total_beats,
-              active_beats,
-              idle_beats,
-              active_percentage,
-              total_keyboard_inputs,
-              total_mouse_clicks,
-              avg_keyboard_per_min,
-              avg_mouse_per_min,
-              total_session_time_seconds,
-              effective_work_seconds,
-              productivity_score,
-              app_usage,
-              browser_usage,
-              created_at
-            FROM contractor_daily_metrics
-            WHERE workday = toDate('${dayStr}')
-            ORDER BY contractor_id
+        // Si ya existen métricas para el día, no recalcular (salvo cuando contractorIds: borrar y reinsertar solo esos)
+        if (!contractorIds?.length) {
+          const exists = await this.clickHouseService.query<{ cnt: number }>(`
+            SELECT count() AS cnt FROM contractor_daily_metrics WHERE workday = toDate('${dayStr}')
           `);
-          allMetrics.push(...existing);
-          continue;
+          if ((exists[0]?.cnt || 0) > 0) {
+            this.logger.log(
+              `⏭️ Skipping contractor_daily_metrics for ${dayStr} (already populated)`,
+            );
+            const existing = await this.clickHouseService
+              .query<ContractorDailyMetricsDto>(`
+              SELECT 
+                contractor_id,
+                workday,
+                total_beats,
+                active_beats,
+                idle_beats,
+                active_percentage,
+                total_keyboard_inputs,
+                total_mouse_clicks,
+                avg_keyboard_per_min,
+                avg_mouse_per_min,
+                total_session_time_seconds,
+                effective_work_seconds,
+                productivity_score,
+                app_usage,
+                browser_usage,
+                created_at
+              FROM contractor_daily_metrics
+              WHERE workday = toDate('${dayStr}')
+              ORDER BY contractor_id
+            `);
+            allMetrics.push(...existing);
+            continue;
+          }
+        } else {
+          // Por contratista: borrar filas existentes de esos contractors para ese día antes de reinsertar
+          await this.clickHouseService.command(`
+            ALTER TABLE contractor_daily_metrics DELETE
+            WHERE workday = toDate('${dayStr}')
+            ${contractorFilter}
+          `);
         }
 
         // ✅ CONSOLIDACIÓN MULTI-AGENTE: Consolidar beats por timestamp antes de calcular métricas
@@ -376,6 +411,7 @@ export class EtlService {
             SUM(mouse_clicks) AS mouse_clicks_contractor
           FROM contractor_activity_15s
           WHERE workday = toDate('${dayStr}')
+          ${contractorFilter}
           GROUP BY contractor_id, workday, beat_timestamp
         ) ca
         -- JOIN para productivity_score: totales ponderados por día
@@ -389,6 +425,7 @@ export class EtlService {
           ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app
           LEFT JOIN apps_dimension d ON d.name = app
           WHERE toDate(timestamp) = toDate('${dayStr}')
+          ${contractorFilter}
           GROUP BY contractor_id, workday
         ) app ON app.contractor_id = ca.contractor_id AND app.workday = ca.workday
         -- JOIN para app_usage Map: segundos por app por (contractor_id, workday)
@@ -406,6 +443,7 @@ export class EtlService {
             FROM events_raw
             ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app
             WHERE toDate(timestamp) = toDate('${dayStr}')
+            ${contractorFilter}
             GROUP BY contractor_id, workday, app
           )
           GROUP BY contractor_id, workday
@@ -448,6 +486,7 @@ export class EtlService {
           ) dp
           ARRAY JOIN JSONExtractKeys(payload, 'browser') AS dc
           WHERE toDate(timestamp) = toDate('${dayStr}')
+          ${contractorFilter}
           GROUP BY contractor_id, workday
         ) web ON web.contractor_id = ca.contractor_id AND web.workday = ca.workday
         -- JOIN para browser_usage Map: segundos por dominio por (contractor_id, workday)
@@ -465,6 +504,7 @@ export class EtlService {
             FROM events_raw
             ARRAY JOIN JSONExtractKeys(payload, 'browser') AS dc
             WHERE toDate(timestamp) = toDate('${dayStr}')
+            ${contractorFilter}
             GROUP BY contractor_id, workday, dc
           )
           GROUP BY contractor_id, workday
@@ -495,10 +535,14 @@ export class EtlService {
             created_at
           FROM contractor_daily_metrics
           WHERE workday = toDate('${dayStr}')
+          ${contractorFilter}
           ORDER BY contractor_id
         `);
         this.logger.log(
-          `✅ Generated ${metrics.length} daily metrics for ${dayStr}`,
+          `✅ Generated ${metrics.length} daily metrics for ${dayStr}` +
+            (contractorIds?.length
+              ? ` (${contractorIds.length} contractors)`
+              : ''),
         );
         allMetrics.push(...metrics);
       }
@@ -648,6 +692,42 @@ export class EtlService {
       );
       throw error;
     }
+  }
+
+  /**
+   * Orquesta los 3 ETL en orden para un contratista al cerrar sesión.
+   * Usa siempre el día de hoy (TODAY) como rango, no el default de 2h.
+   *
+   * @param contractorId - ID del contratista
+   * @param sessionId - ID de la sesión cerrada
+   */
+  async runFullEtlForContractorOnSessionClose(
+    contractorId: string,
+    sessionId: string,
+  ): Promise<void> {
+    const now = new Date();
+    const todayStart = new Date(now);
+    todayStart.setUTCHours(0, 0, 0, 0);
+    const todayEnd = new Date(now);
+
+    this.logger.log(
+      `🔄 [Orchestrator] Starting full ETL for contractor=${contractorId} session=${sessionId} (today: ${todayStart.toISOString().slice(0, 10)})`,
+    );
+
+    // 1) process-events para hoy
+    await this.processEventsToActivity(todayStart, todayEnd, contractorId);
+
+    // 2) process-daily-metrics para hoy, solo este contratista
+    await this.processActivityToDailyMetrics(todayStart, undefined, undefined, [
+      contractorId,
+    ]);
+
+    // 3) process-session-summaries para esta sesión
+    await this.processActivityToSessionSummary(sessionId);
+
+    this.logger.log(
+      `✅ [Orchestrator] Full ETL completed for contractor=${contractorId} session=${sessionId}`,
+    );
   }
 
   /**

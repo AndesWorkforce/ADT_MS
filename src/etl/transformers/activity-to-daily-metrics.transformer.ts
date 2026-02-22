@@ -103,8 +103,9 @@ export class ActivityToDailyMetricsTransformer {
   /**
    * Calcula el productivity_score usando la fórmula multi-factor.
    * Ver PRODUCTIVITY_SCORE.md para detalles.
+   * Expuesto como público para ser reutilizado por RealtimeMetricsService en el flujo bulk.
    */
-  private calculateProductivityScore(
+  calculateProductivityScore(
     activeBeats: number,
     totalBeats: number,
     totalKeyboard: number,

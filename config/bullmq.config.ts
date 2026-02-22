@@ -5,6 +5,7 @@ export const QUEUE_NAMES = {
   ETL_EVENTS_TO_ACTIVITY: 'adt-etl-events-to-activity',
   ETL_DAILY_METRICS: 'adt-etl-daily-metrics',
   ETL_SESSION_SUMMARIES: 'adt-etl-session-summaries',
+  ETL_SESSION_CLOSE: 'adt-etl-session-close',
   ETL_APP_USAGE: 'adt-etl-app-usage',
   INACTIVITY_SCAN: 'adt-inactivity-scan',
 } as const;
@@ -31,6 +32,7 @@ export const QUEUE_CONCURRENCY = {
   ETL_EVENTS_TO_ACTIVITY: 1, // ETLs pesados: 1 a la vez
   ETL_DAILY_METRICS: 1,
   ETL_SESSION_SUMMARIES: 1,
+  ETL_SESSION_CLOSE: 1,
   ETL_APP_USAGE: 1,
   INACTIVITY_SCAN: 1, // Escaneo periódico de inactividad: 1 worker
 } as const;

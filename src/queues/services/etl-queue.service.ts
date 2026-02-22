@@ -27,6 +27,8 @@ export class EtlQueueService {
     private readonly dailyMetricsQueue: Queue,
     @InjectQueue(QUEUE_NAMES.ETL_SESSION_SUMMARIES)
     private readonly sessionSummariesQueue: Queue,
+    @InjectQueue(QUEUE_NAMES.ETL_SESSION_CLOSE)
+    private readonly sessionCloseQueue: Queue,
   ) {}
 
   // ============================================================================
@@ -144,11 +146,59 @@ export class EtlQueueService {
   }
 
   // ============================================================================
+  // FULL ETL ON SESSION CLOSE (orquestadora: process-events → daily-metrics → session-summaries)
+  // ============================================================================
+
+  /**
+   * Encola un job que ejecuta la orquestadora completa para un contratista al cerrar sesión.
+   *
+   * @param sessionId - ID de la sesión cerrada
+   * @param contractorId - ID del contratista
+   * @returns ID del job creado
+   */
+  async addFullEtlOnSessionCloseJob(
+    sessionId: string,
+    contractorId: string,
+  ): Promise<string> {
+    try {
+      const jobId = `session-etl-${sessionId}`;
+
+      const jobData: EtlJobData = {
+        jobType: JobType.FULL_ETL_ON_SESSION_CLOSE,
+        requestedAt: new Date(),
+        sessionId,
+        contractorId,
+      };
+
+      const job = await this.sessionCloseQueue.add(
+        JobType.FULL_ETL_ON_SESSION_CLOSE,
+        jobData,
+        {
+          ...DEFAULT_JOB_OPTIONS,
+          jobId,
+          priority: JobPriority.NORMAL,
+        },
+      );
+
+      this.logger.log(
+        `📋 Full ETL on session close queued: session=${sessionId} contractor=${contractorId} → Job ${job.id}`,
+      );
+
+      return job.id!;
+    } catch (error) {
+      this.logger.error(
+        `❌ Failed to queue full ETL on session close for session=${sessionId}: ${error.message}`,
+      );
+      throw error;
+    }
+  }
+
+  // ============================================================================
   // GESTIÓN DE COLAS
   // ============================================================================
 
   /**
-   * Obtiene estadísticas de ambas colas ETL
+   * Obtiene estadísticas de las colas ETL
    */
   async getQueuesStats(): Promise<{
     dailyMetrics: {
