@@ -30,6 +30,8 @@ export class ContractorsListener {
         country: contractor.country || null,
         client_id: contractor.client_id,
         team_id: contractor.team_id || null,
+        isActive:
+          contractor.isActive !== undefined ? contractor.isActive : true,
         created_at: contractor.created_at
           ? new Date(contractor.created_at)
           : new Date(),
@@ -65,6 +67,8 @@ export class ContractorsListener {
         country: contractor.country || null,
         client_id: contractor.client_id,
         team_id: contractor.team_id || null,
+        isActive:
+          contractor.isActive !== undefined ? contractor.isActive : true,
         created_at: contractor.created_at
           ? new Date(contractor.created_at)
           : new Date(),
@@ -82,4 +86,3 @@ export class ContractorsListener {
     }
   }
 }
-

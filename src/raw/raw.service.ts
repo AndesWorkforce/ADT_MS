@@ -19,6 +19,28 @@ export class RawService {
    */
   async saveEvent(event: EventRawDto): Promise<void> {
     try {
+      // Logs de prueba para MVs: contar antes
+      const enableMvLogs = process.env.ETL_DEBUG_LOGS === '1';
+      const contractorId = event.contractor_id;
+      const workdayStr = (
+        event.timestamp ? new Date(event.timestamp) : new Date()
+      )
+        .toISOString()
+        .split('T')[0];
+
+      let beforeBeats = 0;
+
+      if (enableMvLogs && contractorId) {
+        try {
+          const b1 = await this.clickHouseService.query<{ cnt: number }>(`
+            SELECT count() AS cnt
+            FROM contractor_activity_15s
+            WHERE contractor_id = '${contractorId}' AND workday = toDate('${workdayStr}')
+          `);
+          beforeBeats = Number(b1[0]?.cnt || 0);
+        } catch {}
+      }
+
       await this.clickHouseService.insert('events_raw', {
         event_id: event.event_id,
         contractor_id: event.contractor_id,
@@ -26,9 +48,10 @@ export class RawService {
         session_id: event.session_id || null,
         agent_session_id: event.agent_session_id || null,
         timestamp: event.timestamp,
-        payload: typeof event.payload === 'string' 
-          ? event.payload 
-          : JSON.stringify(event.payload),
+        payload:
+          typeof event.payload === 'string'
+            ? event.payload
+            : JSON.stringify(event.payload),
         created_at: event.created_at,
       });
 
@@ -36,6 +59,30 @@ export class RawService {
       this.logger.debug(
         `✅ RawService: Event saved - Event ID: ${event.event_id}, Contractor: ${event.contractor_id}`,
       );
+
+      // Logs de verificación de MVs (post-insert)
+      if (enableMvLogs && contractorId) {
+        try {
+          // pequeña espera para permitir que las MVs disparen
+          await new Promise((r) => setTimeout(r, 200));
+
+          const a1 = await this.clickHouseService.query<{ cnt: number }>(`
+            SELECT count() AS cnt
+            FROM contractor_activity_15s
+            WHERE contractor_id = '${contractorId}' AND workday = toDate('${workdayStr}')
+          `);
+          const afterBeats = Number(a1[0]?.cnt || 0);
+
+          const dBeats = afterBeats - beforeBeats;
+
+          this.logger.log(
+            `🧪 MV check for contractor ${contractorId} on ${workdayStr} → ` +
+              `activity_15s: ${beforeBeats.toLocaleString('en-US')} → ${afterBeats.toLocaleString('en-US')} (Δ ${dBeats})`,
+          );
+        } catch (err) {
+          this.logger.debug(`MV check skipped: ${(err as Error).message}`);
+        }
+      }
     } catch (error) {
       this.logger.error(
         `❌ RawService: Error saving event - Event ID: ${event.event_id}, Error: ${error.message}`,
@@ -111,6 +158,7 @@ export class RawService {
         country: contractor.country || null,
         client_id: contractor.client_id,
         team_id: contractor.team_id || null,
+        isActive: contractor.isActive ? 1 : 0,
         created_at: contractor.created_at,
         updated_at: contractor.updated_at,
       });
@@ -123,5 +171,53 @@ export class RawService {
       throw error;
     }
   }
-}
 
+  /**
+   * Guardar o actualizar team en la tabla teams_dimension
+   * Usa el motor ReplacingMergeTree, por lo que las actualizaciones son manejadas por ClickHouse
+   */
+  async saveTeam(teamId: string, teamName: string): Promise<void> {
+    try {
+      await this.clickHouseService.insert('teams_dimension', {
+        team_id: teamId,
+        team_name: teamName,
+        created_at: new Date(),
+        updated_at: new Date(),
+      });
+
+      this.logger.debug(
+        `Team saved to teams_dimension: ${teamId} - ${teamName}`,
+      );
+    } catch (error) {
+      logError(this.logger, 'Failed to save team to dimensions', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Guardar o actualizar client en la tabla clients_dimension
+   * Usa el motor ReplacingMergeTree, por lo que las actualizaciones son manejadas por ClickHouse
+   */
+  async saveClient(
+    clientId: string,
+    clientName: string,
+    isActive: boolean = true,
+  ): Promise<void> {
+    try {
+      await this.clickHouseService.insert('clients_dimension', {
+        client_id: clientId,
+        client_name: clientName,
+        isActive: isActive ? 1 : 0,
+        created_at: new Date(),
+        updated_at: new Date(),
+      });
+
+      this.logger.debug(
+        `Client saved to clients_dimension: ${clientId} - ${clientName}`,
+      );
+    } catch (error) {
+      logError(this.logger, 'Failed to save client to dimensions', error);
+      throw error;
+    }
+  }
+}

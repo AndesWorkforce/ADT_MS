@@ -1,10 +1,19 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { ClientsModule, Transport } from '@nestjs/microservices';
+
+import { envs } from 'config';
 
 import { AppService } from './app.service';
 import { ClickHouseModule } from './clickhouse/clickhouse.module';
+import { EtlModule } from './etl/etl.module';
+import { RedisModule } from './redis/redis.module';
+import { QueuesModule } from './queues/queues.module';
+import { AdtListener } from './listeners/adt.listener';
 import { AgentSessionsListener } from './listeners/agent-sessions.listener';
 import { ContractorsListener } from './listeners/contractors.listener';
+import { DimensionsListener } from './listeners/dimensions.listener';
+import { EtlTriggerListener } from './listeners/etl-trigger.listener';
 import { EventsListener } from './listeners/events.listener';
 import { SessionsListener } from './listeners/sessions.listener';
 import { RawModule } from './raw/raw.module';
@@ -14,14 +23,32 @@ import { RawModule } from './raw/raw.module';
     ConfigModule.forRoot({
       isGlobal: true,
     }),
+    // Configuración de NATS para comunicación entre microservicios
+    ClientsModule.register([
+      {
+        name: 'NATS_SERVICE',
+        transport: Transport.NATS,
+        options: {
+          servers: [`nats://${envs.natsHost}:${envs.natsPort}`],
+          user: envs.natsUsername,
+          pass: envs.natsPassword,
+        },
+      },
+    ]),
     ClickHouseModule,
     RawModule,
+    EtlModule,
+    RedisModule,
+    QueuesModule, // ✨ FASE 2: Módulo de colas con BullMQ (EventQueueService exportado)
   ],
   controllers: [
-    EventsListener,
+    EventsListener, // Usa EventQueueService de QueuesModule
     SessionsListener,
     AgentSessionsListener,
     ContractorsListener,
+    DimensionsListener,
+    AdtListener,
+    EtlTriggerListener, // ✨ Dispara ETL de sesión al recibir etl.session.trigger
   ],
   providers: [AppService],
 })

@@ -1,4 +1,9 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 import { createClient, ClickHouseClient } from '@clickhouse/client';
 
 import { envs } from 'config';
@@ -29,11 +34,14 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
       await this.ensureDatabase(tempClient);
 
       // Ahora crear el cliente principal con la base de datos
+      // Configurar timeouts más largos para queries complejas
       this.client = createClient({
         host: `http://${envs.clickhouse.host}:${envs.clickhouse.port}`,
         username: envs.clickhouse.username,
         password: envs.clickhouse.password,
         database: envs.clickhouse.database,
+        request_timeout: 300000, // 5 minutos para queries complejas
+        max_open_connections: 10, // Limitar conexiones simultáneas
       });
 
       // Probar conexión con la base de datos
@@ -45,11 +53,22 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
       // Asegurar que las tablas RAW existen
       await this.ensureRawTables();
 
+      // Asegurar que las tablas de dimensiones existen
+      await this.ensureDimensionsTables();
+
+      // Asegurar que las tablas ADT existen
+      await this.ensureAdtTables();
+
       // Pre-cachear las tablas RAW que acabamos de crear/verificar
       this.verifiedTables.add('events_raw');
       this.verifiedTables.add('sessions_raw');
       this.verifiedTables.add('agent_sessions_raw');
       this.verifiedTables.add('contractor_info_raw');
+      this.verifiedTables.add('apps_dimension');
+      this.verifiedTables.add('domains_dimension');
+      this.verifiedTables.add('contractor_activity_15s');
+      this.verifiedTables.add('contractor_daily_metrics');
+      this.verifiedTables.add('session_summary');
 
       // Cerrar cliente temporal
       await tempClient.close();
@@ -78,18 +97,64 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Ejecutar una consulta y retornar resultados
+   * Con timeout y mejor manejo de errores
    */
-  async query<T = unknown>(query: string): Promise<T[]> {
+  async query<T = unknown>(
+    query: string,
+    timeoutMs: number = 300000,
+  ): Promise<T[]> {
+    const startTime = Date.now();
     try {
-      const result = await this.client.query({
-        query,
-        format: 'JSONEachRow',
+      // Crear un timeout manual para queries muy largas
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => {
+          reject(new Error(`Query timeout after ${timeoutMs}ms`));
+        }, timeoutMs);
       });
 
-      const data = await result.json<T[]>();
+      const queryPromise = this.client
+        .query({
+          query,
+          format: 'JSONEachRow',
+        })
+        .then(async (result) => {
+          const data = await result.json<T[]>();
+          return data;
+        });
+
+      const data = await Promise.race([queryPromise, timeoutPromise]);
+      const duration = Date.now() - startTime;
+
+      if (duration > 5000) {
+        // Log queries que tardan más de 5 segundos
+        this.logger.warn(
+          `Slow query detected (${duration}ms): ${query.substring(0, 200)}...`,
+        );
+      }
+
       return data;
     } catch (error) {
-      this.logger.error(`Query failed: ${query}`, error);
+      const duration = Date.now() - startTime;
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+
+      // Log más detallado para errores de conexión
+      if (
+        errorMessage.includes('socket hang up') ||
+        errorMessage.includes('ECONNRESET') ||
+        errorMessage.includes('timeout')
+      ) {
+        this.logger.error(
+          `Connection error after ${duration}ms. Query: ${query.substring(0, 200)}...`,
+        );
+        this.logger.error(`Error: ${errorMessage}`);
+      } else {
+        this.logger.error(
+          `Query failed after ${duration}ms: ${query.substring(0, 200)}...`,
+          error,
+        );
+      }
+
       throw error;
     }
   }
@@ -103,11 +168,13 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
         query: command,
       });
     } catch (error) {
-      const errorMessage = error instanceof Error 
-        ? error.message 
-        : error instanceof AggregateError
-          ? error.errors?.map((e: Error) => e.message).join('; ') || String(error)
-          : String(error);
+      const errorMessage =
+        error instanceof Error
+          ? error.message
+          : error instanceof AggregateError
+            ? error.errors?.map((e: Error) => e.message).join('; ') ||
+              String(error)
+            : String(error);
       this.logger.error(`Command failed: ${command}`);
       this.logger.error(`Error details: ${errorMessage}`);
       if (error instanceof AggregateError && error.errors) {
@@ -122,7 +189,9 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
   /**
    * Convertir objetos Date al formato DateTime de ClickHouse (YYYY-MM-DD HH:MM:SS)
    */
-  private formatDateForClickHouse(date: Date | string | null | undefined): string | null {
+  private formatDateForClickHouse(
+    date: Date | string | null | undefined,
+  ): string | null {
     if (!date) return null;
     if (typeof date === 'string') {
       // Si ya es un string, intentar parsearlo y formatearlo
@@ -131,7 +200,7 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
       date = parsed;
     }
     if (!(date instanceof Date) || isNaN(date.getTime())) return null;
-    
+
     // Formato: YYYY-MM-DD HH:MM:SS (formato DateTime de ClickHouse)
     const year = date.getUTCFullYear();
     const month = String(date.getUTCMonth() + 1).padStart(2, '0');
@@ -139,18 +208,56 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
     const hours = String(date.getUTCHours()).padStart(2, '0');
     const minutes = String(date.getUTCMinutes()).padStart(2, '0');
     const seconds = String(date.getUTCSeconds()).padStart(2, '0');
-    
+
     return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
   }
 
   /**
-   * Convertir recursivamente objetos Date en los datos al formato de ClickHouse
+   * Formatear fecha como solo fecha (sin hora) para campos Date en ClickHouse
    */
-  private prepareDataForClickHouse<T extends Record<string, unknown>>(data: T): Record<string, unknown> {
+  private formatDateOnlyForClickHouse(
+    date: Date | string | null | undefined,
+  ): string | null {
+    if (!date) return null;
+    if (typeof date === 'string') {
+      const parsed = new Date(date);
+      if (isNaN(parsed.getTime())) return null;
+      date = parsed;
+    }
+    if (!(date instanceof Date) || isNaN(date.getTime())) return null;
+
+    // Formato: YYYY-MM-DD (solo fecha, sin hora)
+    const year = date.getUTCFullYear();
+    const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(date.getUTCDate()).padStart(2, '0');
+
+    return `${year}-${month}-${day}`;
+  }
+
+  /**
+   * Convertir recursivamente objetos Date en los datos al formato de ClickHouse
+   * Campos específicos como 'workday' se formatean como solo fecha (Date),
+   * otros campos Date se formatean como DateTime
+   */
+  private prepareDataForClickHouse<T extends Record<string, unknown>>(
+    data: T,
+  ): Record<string, unknown> {
     const prepared: Record<string, unknown> = { ...data };
+
+    // Campos que son solo fecha (Date) en ClickHouse, no DateTime
+    const dateOnlyFields = ['workday'];
+
     for (const key in prepared) {
       if (prepared[key] instanceof Date) {
-        prepared[key] = this.formatDateForClickHouse(prepared[key] as Date);
+        // Si es un campo de solo fecha, usar formato YYYY-MM-DD
+        if (dateOnlyFields.includes(key)) {
+          prepared[key] = this.formatDateOnlyForClickHouse(
+            prepared[key] as Date,
+          );
+        } else {
+          // Otros campos Date se formatean como DateTime
+          prepared[key] = this.formatDateForClickHouse(prepared[key] as Date);
+        }
       } else if (prepared[key] === null || prepared[key] === undefined) {
         // Mantener null/undefined como está
         continue;
@@ -178,7 +285,7 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
           );
           // Intentar crear las tablas RAW si no existen
           await this.ensureRawTables();
-          
+
           // Verificar nuevamente si la tabla existe
           const tableExistsAfter = await this.tableExists(table);
           if (!tableExistsAfter) {
@@ -189,14 +296,18 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
               `Table ${table} does not exist in database ${envs.clickhouse.database}`,
             );
           }
-          this.logger.log(`✅ ClickHouseService: Table ${table} was created successfully`);
+          this.logger.log(
+            `✅ ClickHouseService: Table ${table} was created successfully`,
+          );
         }
         // Agregar al cache después de verificar
         this.verifiedTables.add(table);
       }
 
       // Convertir objetos Date al formato DateTime de ClickHouse
-      const preparedData = dataArray.map(item => this.prepareDataForClickHouse(item));
+      const preparedData = dataArray.map((item) =>
+        this.prepareDataForClickHouse(item),
+      );
 
       await this.client.insert({
         table,
@@ -216,6 +327,19 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
       this.verifiedTables.delete(table);
       throw error;
     }
+  }
+
+  /**
+   * Insertar múltiples registros de forma masiva (batch insert)
+   * Alias para `insert` que acepta arrays - más eficiente para múltiples registros
+   *
+   * @param table - Nombre de la tabla
+   * @param dataArray - Array de objetos a insertar
+   */
+  async insertBatch(table: string, dataArray: any[]): Promise<void> {
+    // insertBatch es simplemente un alias de insert cuando recibe un array
+    // El método insert ya maneja arrays de forma eficiente
+    return this.insert(table, dataArray);
   }
 
   /**
@@ -263,12 +387,12 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
   async ensureDatabase(client?: ClickHouseClient): Promise<void> {
     const dbName = envs.clickhouse.database;
     const clientToUse = client || this.client;
-    
+
     if (!clientToUse) {
       this.logger.warn('No client available to ensure database');
       return;
     }
-    
+
     // Validar nombre de base de datos (prevenir inyección SQL)
     if (!/^[a-zA-Z0-9_]+$/.test(dbName)) {
       this.logger.error(
@@ -283,21 +407,25 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
       await clientToUse.command({
         query: `CREATE DATABASE IF NOT EXISTS ${dbName}`,
       });
-      this.logger.log(`✅ Database ${dbName} ensured (created or already exists)`);
+      this.logger.log(
+        `✅ Database ${dbName} ensured (created or already exists)`,
+      );
     } catch (error) {
       // Si la creación falla, probablemente es porque:
       // 1. La base de datos ya existe (pero IF NOT EXISTS debería manejar esto)
       // 2. Problemas de permisos
       // 3. La base de datos fue creada por el script de inicialización
       // En cualquier caso, continuamos - el script de inicialización debería manejar la creación de la base de datos
-      const errorMessage = error instanceof Error 
-        ? error.message 
-        : error instanceof AggregateError
-          ? error.errors?.map((e: Error) => e.message).join('; ') || String(error)
-          : String(error);
+      const errorMessage =
+        error instanceof Error
+          ? error.message
+          : error instanceof AggregateError
+            ? error.errors?.map((e: Error) => e.message).join('; ') ||
+              String(error)
+            : String(error);
       this.logger.warn(
         `⚠️ Could not ensure database ${dbName}: ${errorMessage}. ` +
-        `This is usually fine - the init script should have created it. Continuing...`,
+          `This is usually fine - the init script should have created it. Continuing...`,
       );
       if (error instanceof AggregateError && error.errors) {
         error.errors.forEach((err: Error, index: number) => {
@@ -321,18 +449,25 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
     const dbName = envs.clickhouse.database;
 
     try {
-      const tables = ['events_raw', 'sessions_raw', 'agent_sessions_raw', 'contractor_info_raw'];
-      
+      const tables = [
+        'events_raw',
+        'sessions_raw',
+        'agent_sessions_raw',
+        'contractor_info_raw',
+      ];
+
       for (const table of tables) {
         try {
           await this.command(`DROP TABLE IF EXISTS ${dbName}.${table}`);
           this.logger.log(`✅ Dropped table ${table}`);
         } catch (error) {
           // Ignorar errores si la tabla no existe
-          this.logger.debug(`Table ${table} does not exist or could not be dropped: ${error.message}`);
+          this.logger.debug(
+            `Table ${table} does not exist or could not be dropped: ${error.message}`,
+          );
         }
       }
-      
+
       this.logger.log('✅ All RAW tables dropped');
     } catch (error) {
       this.logger.warn(`⚠️ Error dropping RAW tables: ${error.message}`);
@@ -418,6 +553,7 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
           country Nullable(String),
           client_id String,
           team_id Nullable(String),
+          isActive UInt8 DEFAULT 1,
           created_at DateTime,
           updated_at DateTime
         ) ENGINE = ReplacingMergeTree(updated_at)
@@ -429,11 +565,13 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
 
       this.logger.log('✅ All RAW tables are ready');
     } catch (error) {
-      const errorMessage = error instanceof Error 
-        ? error.message 
-        : error instanceof AggregateError
-          ? error.errors?.map((e: Error) => e.message).join('; ') || String(error)
-          : String(error);
+      const errorMessage =
+        error instanceof Error
+          ? error.message
+          : error instanceof AggregateError
+            ? error.errors?.map((e: Error) => e.message).join('; ') ||
+              String(error)
+            : String(error);
       this.logger.error(
         `❌ Error creating/verifying RAW tables: ${errorMessage}`,
       );
@@ -448,5 +586,386 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
       );
     }
   }
-}
 
+  /**
+   * Crear tablas de dimensiones si no existen
+   * Estas tablas definen los pesos de productividad para apps y dominios
+   */
+  async ensureDimensionsTables(): Promise<void> {
+    const dbName = envs.clickhouse.database;
+
+    try {
+      // Crear tabla apps_dimension (sincronizada con Prisma apps)
+      await this.command(`
+        CREATE TABLE IF NOT EXISTS ${dbName}.apps_dimension (
+          id String,
+          name String,
+          category Nullable(String),
+          type Nullable(String),
+          weight Nullable(Float64) DEFAULT 0.5,
+          created_at DateTime DEFAULT now(),
+          updated_at DateTime DEFAULT now()
+        ) ENGINE = MergeTree()
+        ORDER BY id
+      `);
+      this.logger.log('✅ Table apps_dimension verified/created');
+
+      // Migración: verificar si existe app_name y agregar columna name
+      try {
+        // Verificar si existe la columna app_name
+        const appNameColumn = await this.query<{ name: string }>(`
+          SELECT name 
+          FROM system.columns 
+          WHERE database = '${dbName}' 
+            AND table = 'apps_dimension' 
+            AND name = 'app_name'
+        `);
+
+        if (appNameColumn.length > 0) {
+          // Existe app_name, necesitamos agregar name y copiar datos
+          this.logger.log('🔄 Found app_name column, adding name column...');
+
+          // Asegurar que name existe
+          await this.command(`
+            ALTER TABLE ${dbName}.apps_dimension 
+            ADD COLUMN IF NOT EXISTS name String
+          `);
+
+          this.logger.warn(
+            '⚠️ Column app_name detected. Please run the migration script: ADT_MS/scripts/migrate-app-name-to-name.sql ' +
+              'to migrate app_name to name and assign types to existing apps.',
+          );
+        } else {
+          // No existe app_name, solo asegurar que name existe
+          await this.command(`
+            ALTER TABLE ${dbName}.apps_dimension 
+            ADD COLUMN IF NOT EXISTS name String
+          `);
+          this.logger.log('✅ Column name verified/added to apps_dimension');
+        }
+      } catch {
+        // Ignorar si hay errores (columna ya existe o tabla nueva)
+        this.logger.debug('Column name migration skipped or already exists');
+      }
+
+      // Migración: agregar columna id si no existe (para tablas existentes)
+      try {
+        await this.command(`
+          ALTER TABLE ${dbName}.apps_dimension 
+          ADD COLUMN IF NOT EXISTS id String
+        `);
+        this.logger.log('✅ Column id verified/added to apps_dimension');
+      } catch {
+        // Ignorar si la columna ya existe o si hay otros errores
+        this.logger.debug(
+          'Column id already exists in apps_dimension or migration skipped',
+        );
+      }
+
+      // Migración: agregar columnas category, type, weight, updated_at si no existen
+      try {
+        await this.command(`
+          ALTER TABLE ${dbName}.apps_dimension 
+          ADD COLUMN IF NOT EXISTS category Nullable(String)
+        `);
+        await this.command(`
+          ALTER TABLE ${dbName}.apps_dimension 
+          ADD COLUMN IF NOT EXISTS type Nullable(String)
+        `);
+        await this.command(`
+          ALTER TABLE ${dbName}.apps_dimension 
+          ADD COLUMN IF NOT EXISTS weight Nullable(Float64) DEFAULT 0.5
+        `);
+        await this.command(`
+          ALTER TABLE ${dbName}.apps_dimension 
+          ADD COLUMN IF NOT EXISTS updated_at DateTime DEFAULT now()
+        `);
+        this.logger.log(
+          '✅ Columns category, type, weight, updated_at verified/added to apps_dimension',
+        );
+      } catch {
+        this.logger.debug(
+          'Columns category/type/weight/updated_at already exist in apps_dimension or migration skipped',
+        );
+      }
+
+      // Crear tabla domains_dimension
+      await this.command(`
+        CREATE TABLE IF NOT EXISTS ${dbName}.domains_dimension (
+          domain String,
+          category String,
+          weight Float64,
+          created_at DateTime DEFAULT now()
+        ) ENGINE = MergeTree()
+        ORDER BY domain
+      `);
+      this.logger.log('✅ Table domains_dimension verified/created');
+
+      // Crear tabla teams_dimension
+      await this.command(`
+        CREATE TABLE IF NOT EXISTS ${dbName}.teams_dimension (
+          team_id String,
+          team_name String,
+          created_at DateTime DEFAULT now(),
+          updated_at DateTime DEFAULT now()
+        ) ENGINE = ReplacingMergeTree(updated_at)
+        ORDER BY team_id
+      `);
+      this.logger.log('✅ Table teams_dimension verified/created');
+
+      // Crear tabla clients_dimension
+      await this.command(`
+        CREATE TABLE IF NOT EXISTS ${dbName}.clients_dimension (
+          client_id String,
+          client_name String,
+          isActive UInt8 DEFAULT 1,
+          created_at DateTime DEFAULT now(),
+          updated_at DateTime DEFAULT now()
+        ) ENGINE = ReplacingMergeTree(updated_at)
+        ORDER BY client_id
+      `);
+      this.logger.log('✅ Table clients_dimension verified/created');
+
+      this.logger.log('✅ All dimensions tables are ready');
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error
+          ? error.message
+          : error instanceof AggregateError
+            ? error.errors?.map((e: Error) => e.message).join('; ') ||
+              String(error)
+            : String(error);
+      this.logger.error(
+        `❌ Error creating/verifying dimensions tables: ${errorMessage}`,
+      );
+      if (error instanceof AggregateError && error.errors) {
+        error.errors.forEach((err: Error, index: number) => {
+          this.logger.error(`  Detailed error ${index + 1}: ${err.message}`);
+        });
+      }
+      this.logger.warn(
+        '⚠️ Dimensions tables could not be created automatically.',
+      );
+    }
+  }
+
+  /**
+   * Crear tablas ADT (Analytical Data Tables) si no existen.
+   * Estas tablas almacenan las métricas agregadas y procesadas para análisis.
+   */
+  async ensureAdtTables(): Promise<void> {
+    const dbName = envs.clickhouse.database;
+
+    try {
+      // Crear tabla contractor_activity_15s
+      // Cada fila representa un heartbeat de 15 segundos
+      await this.command(`
+        CREATE TABLE IF NOT EXISTS ${dbName}.contractor_activity_15s (
+          contractor_id String,
+          agent_id Nullable(String),
+          session_id Nullable(String),
+          agent_session_id Nullable(String),
+          beat_timestamp DateTime,
+          is_idle UInt8,
+          keyboard_count UInt32,
+          mouse_clicks UInt32,
+          workday Date DEFAULT toDate(beat_timestamp),
+          created_at DateTime DEFAULT now()
+        ) ENGINE = MergeTree()
+        PARTITION BY workday
+        ORDER BY (contractor_id, beat_timestamp)
+        TTL beat_timestamp + INTERVAL 365 DAY
+      `);
+      this.logger.log('✅ Table contractor_activity_15s verified/created');
+
+      // Crear tabla contractor_daily_metrics
+      // Agregación diaria por contractor con productivity_score
+      // Usa ReplacingMergeTree para evitar que se sumen active_percentage y productivity_score
+      await this.command(`
+        CREATE TABLE IF NOT EXISTS ${dbName}.contractor_daily_metrics (
+          contractor_id String,
+          workday Date,
+          total_beats UInt32,
+          active_beats UInt32,
+          idle_beats UInt32,
+          active_percentage Float64,
+          total_keyboard_inputs UInt64,
+          total_mouse_clicks UInt64,
+          avg_keyboard_per_min Float64,
+          avg_mouse_per_min Float64,
+          total_session_time_seconds UInt64,
+          effective_work_seconds UInt64,
+          productivity_score Float64,
+          app_usage Map(String, UInt64) DEFAULT map(),
+          browser_usage Map(String, UInt64) DEFAULT map(),
+          created_at DateTime DEFAULT now()
+        ) ENGINE = ReplacingMergeTree(created_at)
+        PARTITION BY workday
+        ORDER BY (contractor_id, workday)
+        TTL workday + INTERVAL 730 DAY
+      `);
+      this.logger.log('✅ Table contractor_daily_metrics verified/created');
+
+      // Migración: agregar columnas app_usage y browser_usage si no existen (para tablas existentes)
+      try {
+        await this.command(`
+          ALTER TABLE ${dbName}.contractor_daily_metrics 
+          ADD COLUMN IF NOT EXISTS app_usage Map(String, UInt64) DEFAULT map()
+        `);
+        await this.command(`
+          ALTER TABLE ${dbName}.contractor_daily_metrics 
+          ADD COLUMN IF NOT EXISTS browser_usage Map(String, UInt64) DEFAULT map()
+        `);
+        this.logger.log(
+          '✅ Columns app_usage and browser_usage verified/added',
+        );
+      } catch {
+        // Ignorar si las columnas ya existen
+        this.logger.debug(
+          'Columns app_usage/browser_usage already exist or migration skipped',
+        );
+      }
+
+      // Crear tabla session_summary
+      // Una fila por (contractor_id, agent_id, sesión). Resumen por sesión con productivity_score.
+      await this.command(`
+        CREATE TABLE IF NOT EXISTS ${dbName}.session_summary (
+          session_id String,
+          contractor_id String,
+          agent_id Nullable(String),
+          session_start DateTime,
+          session_end DateTime,
+          total_seconds UInt32,
+          active_seconds UInt32,
+          idle_seconds UInt32,
+          productivity_score Float64,
+          created_at DateTime DEFAULT now()
+        ) ENGINE = MergeTree()
+        PARTITION BY toDate(session_start)
+        ORDER BY (contractor_id, agent_id, session_start, session_id)
+        TTL session_start + INTERVAL 365 DAY
+      `);
+      this.logger.log('✅ Table session_summary verified/created');
+
+      // Migración: añadir agent_id si la tabla ya existía sin ella
+      try {
+        await this.command(`
+          ALTER TABLE ${dbName}.session_summary ADD COLUMN IF NOT EXISTS agent_id Nullable(String) AFTER contractor_id
+        `);
+        this.logger.log('✅ session_summary: column agent_id verified/added');
+      } catch {
+        this.logger.debug(
+          'session_summary agent_id column already present or migration skipped',
+        );
+      }
+
+      // ✅ OPTIMIZACIÓN: Crear índices secundarios para queries frecuentes
+      await this.createPerformanceIndexes(dbName);
+
+      this.logger.log('✅ All ADT tables are ready');
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error
+          ? error.message
+          : error instanceof AggregateError
+            ? error.errors?.map((e: Error) => e.message).join('; ') ||
+              String(error)
+            : String(error);
+      this.logger.error(
+        `❌ Error creating/verifying ADT tables: ${errorMessage}`,
+      );
+      if (error instanceof AggregateError && error.errors) {
+        error.errors.forEach((err: Error, index: number) => {
+          this.logger.error(`  Detailed error ${index + 1}: ${err.message}`);
+        });
+      }
+      this.logger.warn('⚠️ ADT tables could not be created automatically.');
+    }
+  }
+
+  /**
+   * Crea índices secundarios para optimizar queries frecuentes.
+   * Los skip indexes en ClickHouse reducen la cantidad de datos escaneados.
+   */
+  private async createPerformanceIndexes(dbName: string): Promise<void> {
+    try {
+      // Índice para events_raw: filtra por contractor_id y timestamp
+      // minmax: bueno para rangos de fechas
+      try {
+        await this.command(`
+          ALTER TABLE ${dbName}.events_raw
+          ADD INDEX IF NOT EXISTS idx_contractor_timestamp (contractor_id, timestamp)
+          TYPE minmax GRANULARITY 4
+        `);
+        this.logger.debug(
+          '✅ Index idx_contractor_timestamp on events_raw verified/created',
+        );
+      } catch {
+        this.logger.debug('Index idx_contractor_timestamp may already exist');
+      }
+
+      // Índice bloom_filter para búsquedas exactas en contractor_id
+      try {
+        await this.command(`
+          ALTER TABLE ${dbName}.events_raw
+          ADD INDEX IF NOT EXISTS idx_contractor_bf (contractor_id)
+          TYPE bloom_filter(0.01) GRANULARITY 1
+        `);
+        this.logger.debug(
+          '✅ Index idx_contractor_bf on events_raw verified/created',
+        );
+      } catch {
+        this.logger.debug('Index idx_contractor_bf may already exist');
+      }
+
+      // Índice para contractor_activity_15s
+      try {
+        await this.command(`
+          ALTER TABLE ${dbName}.contractor_activity_15s
+          ADD INDEX IF NOT EXISTS idx_activity_contractor (contractor_id)
+          TYPE bloom_filter(0.01) GRANULARITY 1
+        `);
+        this.logger.debug(
+          '✅ Index idx_activity_contractor on contractor_activity_15s verified/created',
+        );
+      } catch {
+        this.logger.debug('Index idx_activity_contractor may already exist');
+      }
+
+      // Índice para contractor_daily_metrics
+      try {
+        await this.command(`
+          ALTER TABLE ${dbName}.contractor_daily_metrics
+          ADD INDEX IF NOT EXISTS idx_daily_contractor (contractor_id)
+          TYPE bloom_filter(0.01) GRANULARITY 1
+        `);
+        this.logger.debug(
+          '✅ Index idx_daily_contractor on contractor_daily_metrics verified/created',
+        );
+      } catch {
+        this.logger.debug('Index idx_daily_contractor may already exist');
+      }
+
+      // Índice para workday en contractor_daily_metrics (útil para rangos)
+      try {
+        await this.command(`
+          ALTER TABLE ${dbName}.contractor_daily_metrics
+          ADD INDEX IF NOT EXISTS idx_daily_workday (workday)
+          TYPE minmax GRANULARITY 1
+        `);
+        this.logger.debug(
+          '✅ Index idx_daily_workday on contractor_daily_metrics verified/created',
+        );
+      } catch {
+        this.logger.debug('Index idx_daily_workday may already exist');
+      }
+
+      this.logger.log('✅ Performance indexes verified/created');
+    } catch (error) {
+      this.logger.warn(
+        `⚠️ Could not create some performance indexes: ${error}`,
+      );
+      // No lanzar error, los índices son opcionales
+    }
+  }
+}

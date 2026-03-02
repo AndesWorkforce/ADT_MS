@@ -11,6 +11,7 @@ async function bootstrap() {
   const logLevels = resolveLogLevels();
   Logger.overrideLogger(logLevels);
 
+  // Crear microservicio NATS puro (sin HTTP)
   const app = await NestFactory.createMicroservice<MicroserviceOptions>(
     AppModule,
     {
@@ -40,6 +41,5 @@ async function bootstrap() {
   await app.listen();
 
   log(`ADT microservice is running on NATS`);
-  log(`ClickHouse: ${envs.clickhouse.host}:${envs.clickhouse.port}/${envs.clickhouse.database}`);
 }
 bootstrap();
