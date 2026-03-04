@@ -559,32 +559,71 @@ export class EtlService {
   /**
    * Genera resúmenes de sesión desde contractor_activity_15s.
    * Una fila por (session_id, agent_id). Agrupa por ambos y calcula productividad con fórmula multi-factor.
+   *
+   * Modos de uso:
+   * - sessionId: recalcula solo esa sesión (DELETE + INSERT de ese session_id).
+   * - contractorId + workday: recalcula todas las sesiones de ese contractor en ese día (DELETE + INSERT de ese contractor/día).
+   * - sin parámetros: inserta solo las sesiones que aún no existen en session_summary (modo "all pending", idempotente).
    */
   async processActivityToSessionSummary(
     sessionId?: string,
+    contractorId?: string,
+    workday?: Date,
   ): Promise<SessionSummaryDto[]> {
     try {
-      // Si se pasa sessionId: recalcular completamente esa sesión (borrar y reinsertar summaries)
+      let workdayStr: string | undefined;
+
+      // Normalizar workday a yyyy-MM-dd si viene informado
+      if (workday) {
+        const d = new Date(workday);
+        d.setUTCHours(0, 0, 0, 0);
+        workdayStr = `${d.getUTCFullYear()}-${String(
+          d.getUTCMonth() + 1,
+        ).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+      }
+
+      // 1) Borrado previo según el modo
       if (sessionId) {
+        // Recalcular completamente una sesión específica
         await this.clickHouseService.command(`
           ALTER TABLE session_summary DELETE
           WHERE session_id = '${sessionId}'
         `);
+      } else if (contractorId && workdayStr) {
+        // Recalcular todas las sesiones de un contractor en un día concreto
+        await this.clickHouseService.command(`
+          ALTER TABLE session_summary DELETE
+          WHERE contractor_id = '${contractorId}'
+            AND toDate(session_start) = toDate('${workdayStr}')
+        `);
       }
 
+      // 2) Construir filtro principal y cláusula de idempotencia
       // Idempotencia por defecto: excluir pares (session_id, agent_id) que ya están en session_summary.
-      // Para sessionId específico ya borramos antes, así que no aplicamos NOT IN en ese caso.
-      const notInClause = !sessionId
+      // Para sessionId específico o contractor+workday ya borramos antes, así que NO aplicamos NOT IN en esos casos.
+      const shouldApplyNotIn = !sessionId && !(contractorId && workdayStr);
+
+      const notInClause = shouldApplyNotIn
         ? `AND (a.session_id, coalesce(a.agent_id, '')) NOT IN (
         SELECT session_id, coalesce(agent_id, '') FROM session_summary
       )`
         : '';
 
-      const sessionFilter = sessionId
-        ? `WHERE a.session_id = '${sessionId}'`
-        : `WHERE a.session_id IN (
+      let sessionFilter: string;
+      if (sessionId) {
+        sessionFilter = `WHERE a.session_id = '${sessionId}'`;
+      } else if (contractorId && workdayStr) {
+        sessionFilter = `
+          WHERE a.contractor_id = '${contractorId}'
+            AND toDate(a.beat_timestamp) = toDate('${workdayStr}')
+        `;
+      } else {
+        sessionFilter = `
+          WHERE a.session_id IN (
              SELECT DISTINCT session_id FROM contractor_activity_15s WHERE session_id IS NOT NULL
-           ) ${notInClause}`;
+           ) ${notInClause}
+        `;
+      }
 
       const insertQuery = `
         INSERT INTO session_summary (session_id, contractor_id, agent_id, session_start, session_end, total_seconds, active_seconds, idle_seconds, productivity_score, created_at)
@@ -667,6 +706,18 @@ export class EtlService {
 
       await this.clickHouseService.command(insertQuery);
 
+      let selectWhere: string;
+      if (sessionId) {
+        selectWhere = `WHERE session_id = '${sessionId}'`;
+      } else if (contractorId && workdayStr) {
+        selectWhere = `
+          WHERE contractor_id = '${contractorId}'
+            AND toDate(session_start) = toDate('${workdayStr}')
+        `;
+      } else {
+        selectWhere = `WHERE session_start >= today() - 7`;
+      }
+
       const selectQuery = `
         SELECT 
           session_id,
@@ -680,11 +731,7 @@ export class EtlService {
           productivity_score,
           created_at
         FROM session_summary
-        ${
-          sessionId
-            ? `WHERE session_id = '${sessionId}'`
-            : `WHERE session_start >= today() - 7`
-        }
+        ${selectWhere}
         ORDER BY session_start DESC
         LIMIT 1000
       `;
@@ -733,8 +780,12 @@ export class EtlService {
       contractorId,
     ]);
 
-    // 3) process-session-summaries para esta sesión (recalcular resumen de sesión)
-    await this.processActivityToSessionSummary(sessionId);
+    // 3) process-session-summaries para este contractor y día (recalcular todas las sesiones del día)
+    await this.processActivityToSessionSummary(
+      undefined,
+      contractorId,
+      todayStart,
+    );
 
     this.logger.log(
       `✅ [Orchestrator] Full ETL completed for contractor=${contractorId} session=${sessionId}`,

@@ -72,6 +72,7 @@ export class SessionSummariesService {
           : '';
 
         if (effectiveAgentId) {
+          // Vista por agente: usar duración calendario, escalando active/idle
           const query = `
             SELECT 
               session_id,
@@ -79,9 +80,21 @@ export class SessionSummariesService {
               agent_id,
               session_start,
               session_end,
-              total_seconds,
-              active_seconds,
-              idle_seconds,
+              dateDiff('second', session_start, session_end) AS total_seconds,
+              round(
+                dateDiff('second', session_start, session_end)
+                * active_seconds
+                / nullIf(total_seconds, 0)
+              ) AS active_seconds,
+              greatest(
+                0,
+                dateDiff('second', session_start, session_end) -
+                round(
+                  dateDiff('second', session_start, session_end)
+                  * active_seconds
+                  / nullIf(total_seconds, 0)
+                )
+              ) AS idle_seconds,
               productivity_score,
               created_at
             FROM session_summary
@@ -93,26 +106,53 @@ export class SessionSummariesService {
           return await this.clickHouseService.query(query);
         }
 
-        // Consolidado: una fila por session_id (subconsulta evita "aggregate in WHERE" de ClickHouse)
+        // Consolidado: una fila por session_id
         const query = `
           SELECT 
             session_id,
             contractor_id,
-            any(agent_id) AS agent_id,
-            any(session_start) AS session_start,
-            any(session_end) AS session_end,
-            any(total_seconds) AS total_seconds,
-            sum(active_seconds) AS active_seconds,
-            sum(idle_seconds) AS idle_seconds,
-            round(avg(productivity_score), 2) AS productivity_score,
-            max(created_at) AS created_at
+            agent_id,
+            session_start,
+            session_end,
+            dateDiff('second', session_start, session_end) AS total_seconds,
+            round(
+              dateDiff('second', session_start, session_end)
+              * active_seconds_sum
+              / nullIf(total_seconds_sum, 0)
+            ) AS active_seconds,
+            greatest(
+              0,
+              dateDiff('second', session_start, session_end) -
+              round(
+                dateDiff('second', session_start, session_end)
+                * active_seconds_sum
+                / nullIf(total_seconds_sum, 0)
+              )
+            ) AS idle_seconds,
+            round(
+              productivity_numerator / nullIf(total_seconds_sum, 0),
+              2
+            ) AS productivity_score,
+            created_at
           FROM (
-            SELECT session_id, contractor_id, agent_id, session_start, session_end,
-              total_seconds, active_seconds, idle_seconds, productivity_score, created_at
-            FROM session_summary
-            WHERE contractor_id = '${contractorId}' AND ${dateFilter}
-          ) AS t
-          GROUP BY session_id, contractor_id
+            SELECT 
+              session_id,
+              contractor_id,
+              any(agent_id) AS agent_id,
+              min(session_start) AS session_start,
+              max(session_end) AS session_end,
+              sum(total_seconds) AS total_seconds_sum,
+              sum(active_seconds) AS active_seconds_sum,
+              sum(productivity_score * total_seconds) AS productivity_numerator,
+              max(created_at) AS created_at
+            FROM (
+              SELECT session_id, contractor_id, agent_id, session_start, session_end,
+                total_seconds, active_seconds, idle_seconds, productivity_score, created_at
+              FROM session_summary
+              WHERE contractor_id = '${contractorId}' AND ${dateFilter}
+            ) AS t
+            GROUP BY session_id, contractor_id
+          ) AS g
           ORDER BY session_start DESC
         `;
         return await this.clickHouseService.query(query);
@@ -163,6 +203,7 @@ export class SessionSummariesService {
 
         let sessions: any[];
         if (effectiveAgentId) {
+          // Vista por agente: usar duración calendario, escalando active/idle
           const query = `
             SELECT 
               session_id,
@@ -170,9 +211,21 @@ export class SessionSummariesService {
               agent_id,
               session_start,
               session_end,
-              total_seconds,
-              active_seconds,
-              idle_seconds,
+              dateDiff('second', session_start, session_end) AS total_seconds,
+              round(
+                dateDiff('second', session_start, session_end)
+                * active_seconds
+                / nullIf(total_seconds, 0)
+              ) AS active_seconds,
+              greatest(
+                0,
+                dateDiff('second', session_start, session_end) -
+                round(
+                  dateDiff('second', session_start, session_end)
+                  * active_seconds
+                  / nullIf(total_seconds, 0)
+                )
+              ) AS idle_seconds,
               productivity_score,
               created_at
             FROM session_summary
@@ -183,25 +236,53 @@ export class SessionSummariesService {
           `;
           sessions = (await this.clickHouseService.query(query)) as any[];
         } else {
+          // Consolidado: una fila por session_id
           const query = `
             SELECT 
               session_id,
               contractor_id,
-              any(agent_id) AS agent_id,
-              any(session_start) AS session_start,
-              any(session_end) AS session_end,
-              any(total_seconds) AS total_seconds,
-              sum(active_seconds) AS active_seconds,
-              sum(idle_seconds) AS idle_seconds,
-              round(avg(productivity_score), 2) AS productivity_score,
-              max(created_at) AS created_at
+              agent_id,
+              session_start,
+              session_end,
+              dateDiff('second', session_start, session_end) AS total_seconds,
+              round(
+                dateDiff('second', session_start, session_end)
+                * active_seconds_sum
+                / nullIf(total_seconds_sum, 0)
+              ) AS active_seconds,
+              greatest(
+                0,
+                dateDiff('second', session_start, session_end) -
+                round(
+                  dateDiff('second', session_start, session_end)
+                  * active_seconds_sum
+                  / nullIf(total_seconds_sum, 0)
+                )
+              ) AS idle_seconds,
+              round(
+                productivity_numerator / nullIf(total_seconds_sum, 0),
+                2
+              ) AS productivity_score,
+              created_at
             FROM (
-              SELECT session_id, contractor_id, agent_id, session_start, session_end,
-                total_seconds, active_seconds, idle_seconds, productivity_score, created_at
-              FROM session_summary
-              WHERE contractor_id = '${contractorId}' AND ${dateFilter}
-            ) AS t
-            GROUP BY session_id, contractor_id
+              SELECT 
+                session_id,
+                contractor_id,
+                any(agent_id) AS agent_id,
+                min(session_start) AS session_start,
+                max(session_end) AS session_end,
+                sum(total_seconds) AS total_seconds_sum,
+                sum(active_seconds) AS active_seconds_sum,
+                sum(productivity_score * total_seconds) AS productivity_numerator,
+                max(created_at) AS created_at
+              FROM (
+                SELECT session_id, contractor_id, agent_id, session_start, session_end,
+                  total_seconds, active_seconds, idle_seconds, productivity_score, created_at
+                FROM session_summary
+                WHERE contractor_id = '${contractorId}' AND ${dateFilter}
+              ) AS t
+              GROUP BY session_id, contractor_id
+            ) AS g
             ORDER BY session_start DESC
           `;
           sessions = (await this.clickHouseService.query(query)) as any[];
