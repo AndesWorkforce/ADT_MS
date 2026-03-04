@@ -564,13 +564,24 @@ export class EtlService {
     sessionId?: string,
   ): Promise<SessionSummaryDto[]> {
     try {
-      // Idempotencia: excluir pares (session_id, agent_id) que ya están en session_summary.
-      // ClickHouse no permite subconsultas correlacionadas (NOT EXISTS con a.session_id), usamos NOT IN con tupla.
-      const notInClause = `AND (a.session_id, coalesce(a.agent_id, '')) NOT IN (
+      // Si se pasa sessionId: recalcular completamente esa sesión (borrar y reinsertar summaries)
+      if (sessionId) {
+        await this.clickHouseService.command(`
+          ALTER TABLE session_summary DELETE
+          WHERE session_id = '${sessionId}'
+        `);
+      }
+
+      // Idempotencia por defecto: excluir pares (session_id, agent_id) que ya están en session_summary.
+      // Para sessionId específico ya borramos antes, así que no aplicamos NOT IN en ese caso.
+      const notInClause = !sessionId
+        ? `AND (a.session_id, coalesce(a.agent_id, '')) NOT IN (
         SELECT session_id, coalesce(agent_id, '') FROM session_summary
-      )`;
+      )`
+        : '';
+
       const sessionFilter = sessionId
-        ? `WHERE a.session_id = '${sessionId}' ${notInClause}`
+        ? `WHERE a.session_id = '${sessionId}'`
         : `WHERE a.session_id IN (
              SELECT DISTINCT session_id FROM contractor_activity_15s WHERE session_id IS NOT NULL
            ) ${notInClause}`;
@@ -714,15 +725,15 @@ export class EtlService {
       `🔄 [Orchestrator] Starting full ETL for contractor=${contractorId} session=${sessionId} (today: ${todayStart.toISOString().slice(0, 10)})`,
     );
 
-    // 1) process-events para hoy
-    await this.processEventsToActivity(todayStart, todayEnd, contractorId);
+    // 1) process-events para hoy (recalcular rango del día para este contractor)
+    await this.processEventsToActivityForce(todayStart, todayEnd, contractorId);
 
     // 2) process-daily-metrics para hoy, solo este contratista
     await this.processActivityToDailyMetrics(todayStart, undefined, undefined, [
       contractorId,
     ]);
 
-    // 3) process-session-summaries para esta sesión
+    // 3) process-session-summaries para esta sesión (recalcular resumen de sesión)
     await this.processActivityToSessionSummary(sessionId);
 
     this.logger.log(
