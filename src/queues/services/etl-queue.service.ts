@@ -151,6 +151,9 @@ export class EtlQueueService {
 
   /**
    * Encola un job que ejecuta la orquestadora completa para un contratista al cerrar sesión.
+   * Cada cierre de sesión (cada trigger) crea un job nuevo: si usáramos solo sessionId como jobId,
+   * BullMQ ignoraría los duplicados y solo se ejecutaría el ETL una vez por sesión; al tener varias
+   * agent sessions en la misma sesión principal, los cierres posteriores no generarían nuevo ETL.
    *
    * @param sessionId - ID de la sesión cerrada
    * @param contractorId - ID del contratista
@@ -161,7 +164,7 @@ export class EtlQueueService {
     contractorId: string,
   ): Promise<string> {
     try {
-      const jobId = `session-etl-${sessionId}`;
+      const jobId = `session-etl-${sessionId}-${Date.now()}`;
 
       const jobData: EtlJobData = {
         jobType: JobType.FULL_ETL_ON_SESSION_CLOSE,

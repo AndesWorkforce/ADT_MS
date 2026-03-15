@@ -33,7 +33,8 @@ interface SessionEtlTriggerPayload {
  * ✅ Incluye sessionId y contractorId
  * ✅ Logs claros de recepción / éxito / error
  * ✅ Lógica ETL desacoplada de EVENTS_MS (reside solo en ADT_MS)
- * ✅ Idempotente: BullMQ descarta el job si ya existe (jobId determinista)
+ * ✅ Cada cierre encola un job distinto (jobId con timestamp) para que varias agent sessions
+ *    de la misma sesión principal disparen ETL en cada cierre y no se descarten como duplicados
  *
  * Nota: requiere USE_ETL_QUEUE=true en la configuración de ADT_MS.
  * Si la cola no está habilitada, se registra una advertencia pero no se lanza error.
