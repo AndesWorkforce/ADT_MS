@@ -9,28 +9,28 @@ services:
   # ─── NATS message broker ────────────────────────────────────────────────────
   nats:
     image: nats:2.10-alpine
-    container_name: andes-user-nats
+    container_name: andes-adt-nats
     restart: unless-stopped
     command:
-      - "--user"
-      - "${NATS_USERNAME}"
-      - "--pass"
-      - "${NATS_PASSWORD}"
-      - "--port"
-      - "4222"
-      - "-m"
-      - "8222" # enable HTTP monitoring endpoint
+      - '--user'
+      - '${NATS_USERNAME}'
+      - '--pass'
+      - '${NATS_PASSWORD}'
+      - '--port'
+      - '4222'
+      - '-m'
+      - '8222' # enable HTTP monitoring endpoint
     ports:
-      - "4222:4222" # client connections
-      - "8222:8222" # HTTP monitoring (optional)
+      - '4222:4222' # client connections
+      - '8222:8222' # HTTP monitoring (optional)
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      test: ['CMD', 'wget', '--spider', '-q', 'http://localhost:8222/healthz']
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # ─── User Microservice ──────────────────────────────────────────────────────
-  user-ms:
+  # ─── ADT Microservice ──────────────────────────────────────────────────────
+  adt-ms:
     build:
       context: .
       dockerfile: Dockerfile
@@ -72,12 +72,19 @@ services:
         USE_INACTIVITY_ALERTS: ${USE_INACTIVITY_ALERTS:-true}
         INACTIVITY_THRESHOLD_MINUTES: ${INACTIVITY_THRESHOLD_MINUTES:-60}
         INACTIVITY_SCAN_INTERVAL_MINUTES: ${INACTIVITY_SCAN_INTERVAL_MINUTES:-10}
-    container_name: andes-user-ms
+    container_name: andes-adt-ms
     restart: unless-stopped
     ports:
-      - "${PORT:-3005}:${PORT:-3005}"
+      - '${PORT:-3005}:${PORT:-3005}'
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3004/health"]
+      test:
+        [
+          'CMD',
+          'wget',
+          '--spider',
+          '-q',
+          'http://localhost:${PORT:-3005}/health',
+        ]
       interval: 15s
       timeout: 5s
       retries: 5

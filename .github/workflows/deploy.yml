@@ -1,0 +1,79 @@
+# ============================================================
+# CI/CD — Build → GHCR → Portainer
+#
+# Secrets required (repo Settings → Secrets → Actions):
+#   PORTAINER_WEBHOOK_URL  →  URL del webhook del stack en Portainer
+#                             (Portainer → Stack → <nombre> → Webhook)
+#
+# El GITHUB_TOKEN lo provee Actions automáticamente; no hace falta
+# configurarlo manualmente.
+# ============================================================
+name: Build, Push & Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: andesworkforce/adt_ms
+
+jobs:
+  build-and-deploy:
+    name: Build image → push GHCR → redeploy Portainer
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write # necesario para push a GHCR
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Buildx (habilita cache multicapa y multi-platform si hace falta)
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ── 3. Login GHCR ──────────────────────────────────────────────────────
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 4. Metadata (tags + labels OCI) ────────────────────────────────────
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            # sha corto para trazabilidad (sha-a1b2c3d)
+            type=sha,prefix=sha-,format=short
+            # :latest solo en la rama principal
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      # ── 5. Build & Push ─────────────────────────────────────────────────────
+      - name: Build and push to GHCR
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: production # usa el stage "production" del Dockerfile multistage
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Cache en GitHub Actions → build mucho más rápido en runs sucesivos
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ── 6. Webhook → Portainer redeploy ─────────────────────────────────────
+      - name: Trigger Portainer stack redeploy
+        run: |
+          curl -f -v -4 -X POST \
+          -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)" \
+          --connect-timeout 10 \
+          "${{ secrets.PORTAINER_WEBHOOK_URL }}"
