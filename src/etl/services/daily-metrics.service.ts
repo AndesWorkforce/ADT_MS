@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+﻿import { Injectable, Logger } from '@nestjs/common';
 
 import { envs } from 'config';
 import { ClickHouseService } from '../../clickhouse/clickhouse.service';
@@ -103,7 +103,7 @@ export class DailyMetricsService {
           typeof row.workday === 'string'
             ? row.workday.split('T')[0]
             : row.workday instanceof Date
-              ? row.workday.toISOString().split('T')[0]
+              ? row.workday.toLocaleDateString('en-CA')
               : row.workday,
         app_usage: appUsage,
         browser_usage: browserUsage,

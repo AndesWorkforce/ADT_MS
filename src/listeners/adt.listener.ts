@@ -1,4 +1,4 @@
-import { Controller, Logger, Optional } from '@nestjs/common';
+﻿import { Controller, Logger, Optional } from '@nestjs/common';
 import { MessagePattern, Payload } from '@nestjs/microservices';
 
 import { getMessagePattern, logError, envs } from 'config';
@@ -553,8 +553,8 @@ export class AdtListener {
             toDate,
           );
 
-        const fromStr = fromDate.toISOString().split('T')[0];
-        const toStr = toDate.toISOString().split('T')[0];
+        const fromStr = fromDate.toLocaleDateString('en-CA');
+        const toStr = toDate.toLocaleDateString('en-CA');
 
         const agentIds = Object.keys(byAgent.agents);
 

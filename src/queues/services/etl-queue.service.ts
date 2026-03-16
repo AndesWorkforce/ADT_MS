@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+﻿import { Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 
@@ -50,7 +50,7 @@ export class EtlQueueService {
   ): Promise<string> {
     try {
       const effectiveWorkday = workday || new Date();
-      effectiveWorkday.setUTCHours(0, 0, 0, 0);
+      effectiveWorkday.setHours(0, 0, 0, 0);
 
       const dayStr = effectiveWorkday.toISOString().slice(0, 10); // YYYY-MM-DD
 
