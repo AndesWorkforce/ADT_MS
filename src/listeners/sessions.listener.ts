@@ -12,6 +12,22 @@ export class SessionsListener {
 
   constructor(private readonly rawService: RawService) {}
 
+  private toSessionRaw(session: any): SessionRawDto {
+    return {
+      session_id: session.id,
+      contractor_id: session.contractor_id,
+      session_start: new Date(session.session_start),
+      session_end: session.session_end ? new Date(session.session_end) : null,
+      total_duration: session.total_duration || null,
+      created_at: session.created_at
+        ? new Date(session.created_at)
+        : new Date(),
+      updated_at: session.updated_at
+        ? new Date(session.updated_at)
+        : new Date(),
+    };
+  }
+
   /**
    * Escuchar evento session.created de USER_MS
    */
@@ -20,16 +36,7 @@ export class SessionsListener {
     try {
       this.logger.debug(`Received session.created: ${session.id}`);
 
-      const sessionRaw: SessionRawDto = {
-        session_id: session.id,
-        contractor_id: session.contractor_id,
-        session_start: new Date(session.session_start),
-        session_end: session.session_end ? new Date(session.session_end) : null,
-        total_duration: session.total_duration || null,
-        created_at: session.created_at ? new Date(session.created_at) : new Date(),
-        updated_at: session.updated_at ? new Date(session.updated_at) : new Date(),
-      };
-
+      const sessionRaw: SessionRawDto = this.toSessionRaw(session);
       await this.rawService.saveSession(sessionRaw);
       this.logger.debug(`✅ Session saved to RAW: ${sessionRaw.session_id}`);
     } catch (error) {
@@ -45,16 +52,7 @@ export class SessionsListener {
     try {
       this.logger.debug(`Received session.updated: ${session.id}`);
 
-      const sessionRaw: SessionRawDto = {
-        session_id: session.id,
-        contractor_id: session.contractor_id,
-        session_start: new Date(session.session_start),
-        session_end: session.session_end ? new Date(session.session_end) : null,
-        total_duration: session.total_duration || null,
-        created_at: session.created_at ? new Date(session.created_at) : new Date(),
-        updated_at: session.updated_at ? new Date(session.updated_at) : new Date(),
-      };
-
+      const sessionRaw: SessionRawDto = this.toSessionRaw(session);
       // Para actualizaciones, insertamos de nuevo (ClickHouse manejará la deduplicación si es necesario)
       // O podrías implementar una lógica UPDATE si tu tabla lo soporta
       await this.rawService.saveSession(sessionRaw);
@@ -64,4 +62,3 @@ export class SessionsListener {
     }
   }
 }
-

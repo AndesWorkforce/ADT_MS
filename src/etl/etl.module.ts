@@ -11,6 +11,7 @@ import { DimensionsService } from './services/dimensions.service';
 import { EtlService } from './services/etl.service';
 import { RankingService } from './services/ranking.service';
 import { RealtimeMetricsService } from './services/realtime-metrics.service';
+import { ActivityRepository } from './services/activity-repository.service';
 import { SessionSummariesService } from './services/session-summaries.service';
 import { UsageDataService } from './services/usage-data.service';
 // Transformers
@@ -21,6 +22,7 @@ import { EventsToActivityTransformer } from './transformers/events-to-activity.t
 @Module({
   imports: [ClickHouseModule],
   providers: [
+    ActivityRepository,
     ActivityService,
     AppUsageService,
     AppsSyncService,
@@ -37,6 +39,7 @@ import { EventsToActivityTransformer } from './transformers/events-to-activity.t
     ActivityToSessionSummaryTransformer,
   ],
   exports: [
+    ActivityRepository,
     ActivityService,
     AppUsageService,
     AppsSyncService,
