@@ -832,7 +832,7 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
         CREATE TABLE IF NOT EXISTS ${dbName}.session_summary (
           session_id String,
           contractor_id String,
-          agent_id Nullable(String),
+          agent_id String,
           session_start DateTime,
           session_end DateTime,
           total_seconds UInt32,

@@ -448,43 +448,19 @@ export class EtlService {
           )
           GROUP BY contractor_id, workday
         ) app_map ON app_map.contractor_id = ca.contractor_id AND app_map.workday = ca.workday
-        -- JOIN para productivity_score: totales ponderados browser por día
+        -- JOIN para productivity_score: totales ponderados browser por día (peso por dominio desde domains_dimension cuando existe)
         LEFT JOIN (
           SELECT 
             contractor_id,
             toDate(timestamp) AS workday,
             sum(
               JSONExtractFloat(payload, 'browser', dc) *
-              ifNull(
-                if(
-                  arrayFirstIndex(x -> x = dc, de_exact_domains) > 0,
-                  de_exact_weights[arrayFirstIndex(x -> x = dc, de_exact_domains)],
-                  if(
-                    arrayFirstIndex(p -> startsWith(dc, p), dp_prefix_domains) > 0,
-                    dp_prefix_weights[arrayFirstIndex(p -> startsWith(dc, p), dp_prefix_domains)],
-                    0.5
-                  )
-                ),
-                0.5
-              )
+              ifNull(d.weight, 1)
             ) AS weighted_seconds,
             sum(JSONExtractFloat(payload, 'browser', dc)) AS total_seconds
           FROM events_raw
-          CROSS JOIN (
-            SELECT 
-              groupArray(domain) AS de_exact_domains,
-              groupArray(weight) AS de_exact_weights
-            FROM domains_dimension
-            WHERE right(domain, 1) != '.'
-          ) de
-          CROSS JOIN (
-            SELECT 
-              groupArray(domain) AS dp_prefix_domains,
-              groupArray(weight) AS dp_prefix_weights
-            FROM domains_dimension
-            WHERE right(domain, 1) = '.'
-          ) dp
           ARRAY JOIN JSONExtractKeys(payload, 'browser') AS dc
+          LEFT JOIN domains_dimension d ON d.domain = dc
           WHERE toDate(timestamp) = toDate('${dayStr}')
           ${contractorFilter}
           GROUP BY contractor_id, workday
@@ -640,11 +616,11 @@ export class EtlService {
             0.35 * (100.0 * sum(if(a.is_idle = 0, 1, 0)) / nullIf(count(), 0)) +
             0.20 * least(100.0, 15.0 * ln(1 + (((sum(a.keyboard_count) + sum(a.mouse_clicks)) / nullIf(count() * 15 / 60, 0)) / 2.0))) +
             0.30 * ifNull(
-              100.0 * greatest(0.0, least(1.0, ((any(app.weighted_seconds) / nullIf(any(app.total_seconds), 0)) - 0.2) / 0.8)),
+              100.0 * greatest(0.0, least(1.0, ((any(app.weighted_seconds) / nullIf(any(app.app_total_seconds), 0)) - 0.2) / 0.8)),
               50.0
             ) +
             0.15 * ifNull(
-              100.0 * greatest(0.0, least(1.0, ((any(web.weighted_seconds) / nullIf(any(web.total_seconds), 0)) - 0.2) / 0.8)),
+              100.0 * greatest(0.0, least(1.0, ((any(web.weighted_seconds) / nullIf(any(web.web_total_seconds), 0)) - 0.2) / 0.8)),
               50.0
             )
           )) AS productivity_score,
@@ -655,7 +631,7 @@ export class EtlService {
             e.session_id,
             e.agent_id,
             sum(JSONExtractFloat(e.payload, 'AppUsage', app) * ifNull(d.weight, 0.5)) AS weighted_seconds,
-            sum(JSONExtractFloat(e.payload, 'AppUsage', app)) AS total_seconds
+            sum(JSONExtractFloat(e.payload, 'AppUsage', app)) AS app_total_seconds
           FROM events_raw e
           ARRAY JOIN JSONExtractKeys(e.payload, 'AppUsage') AS app
           LEFT JOIN apps_dimension d ON d.name = app
@@ -667,36 +643,12 @@ export class EtlService {
             e.agent_id,
             sum(
               JSONExtractFloat(e.payload, 'browser', dc) *
-              ifNull(
-                if(
-                  arrayFirstIndex(x -> x = dc, de_exact_domains) > 0,
-                  de_exact_weights[arrayFirstIndex(x -> x = dc, de_exact_domains)],
-                  if(
-                    arrayFirstIndex(p -> startsWith(dc, p), dp_prefix_domains) > 0,
-                    dp_prefix_weights[arrayFirstIndex(p -> startsWith(dc, p), dp_prefix_domains)],
-                    0.5
-                  )
-                ),
-                0.5
-              )
+              ifNull(d.weight, 1)
             ) AS weighted_seconds,
-            sum(JSONExtractFloat(e.payload, 'browser', dc)) AS total_seconds
+            sum(JSONExtractFloat(e.payload, 'browser', dc)) AS web_total_seconds
           FROM events_raw e
-          CROSS JOIN (
-            SELECT 
-              groupArray(domain) AS de_exact_domains,
-              groupArray(weight) AS de_exact_weights
-            FROM domains_dimension
-            WHERE right(domain, 1) != '.'
-          ) de
-          CROSS JOIN (
-            SELECT 
-              groupArray(domain) AS dp_prefix_domains,
-              groupArray(weight) AS dp_prefix_weights
-            FROM domains_dimension
-            WHERE right(domain, 1) = '.'
-          ) dp
           ARRAY JOIN JSONExtractKeys(e.payload, 'browser') AS dc
+          LEFT JOIN domains_dimension d ON d.domain = dc
           GROUP BY e.session_id, e.agent_id
         ) web ON web.session_id = a.session_id AND coalesce(web.agent_id, '') = coalesce(a.agent_id, '')
         ${sessionFilter}
