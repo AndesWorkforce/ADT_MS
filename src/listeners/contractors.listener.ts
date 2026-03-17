@@ -5,6 +5,7 @@ import { getMessagePattern, logError } from 'config';
 
 import { RawService } from '../raw/raw.service';
 import { ContractorRawDto } from '../raw/dto/contractor-raw.dto';
+import { ContractorPayload } from 'src/listeners/listener.interfaces';
 
 @Controller()
 export class ContractorsListener {
@@ -12,7 +13,7 @@ export class ContractorsListener {
 
   constructor(private readonly rawService: RawService) {}
 
-  private toContractorRaw(contractor: any): ContractorRawDto {
+  private toContractorRaw(contractor: ContractorPayload): ContractorRawDto {
     return {
       contractor_id: contractor.id,
       name: contractor.name,
@@ -37,7 +38,9 @@ export class ContractorsListener {
    * Escuchar evento contractor.created de USER_MS
    */
   @EventPattern(getMessagePattern('contractor.created'))
-  async handleContractorCreated(@Payload() contractor: any): Promise<void> {
+  async handleContractorCreated(
+    @Payload() contractor: ContractorPayload,
+  ): Promise<void> {
     try {
       this.logger.debug(`Received contractor.created: ${contractor.id}`);
 
@@ -55,7 +58,9 @@ export class ContractorsListener {
    * Escuchar evento contractor.updated de USER_MS
    */
   @EventPattern(getMessagePattern('contractor.updated'))
-  async handleContractorUpdated(@Payload() contractor: any): Promise<void> {
+  async handleContractorUpdated(
+    @Payload() contractor: ContractorPayload,
+  ): Promise<void> {
     try {
       this.logger.debug(`Received contractor.updated: ${contractor.id}`);
 

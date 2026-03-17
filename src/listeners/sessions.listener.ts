@@ -5,6 +5,7 @@ import { getMessagePattern, logError } from 'config';
 
 import { RawService } from '../raw/raw.service';
 import { SessionRawDto } from '../raw/dto/session-raw.dto';
+import { SessionPayload } from 'src/listeners/listener.interfaces';
 
 @Controller()
 export class SessionsListener {
@@ -12,7 +13,7 @@ export class SessionsListener {
 
   constructor(private readonly rawService: RawService) {}
 
-  private toSessionRaw(session: any): SessionRawDto {
+  private toSessionRaw(session: SessionPayload): SessionRawDto {
     return {
       session_id: session.id,
       contractor_id: session.contractor_id,
@@ -32,7 +33,9 @@ export class SessionsListener {
    * Escuchar evento session.created de USER_MS
    */
   @EventPattern(getMessagePattern('session.created'))
-  async handleSessionCreated(@Payload() session: any): Promise<void> {
+  async handleSessionCreated(
+    @Payload() session: SessionPayload,
+  ): Promise<void> {
     try {
       this.logger.debug(`Received session.created: ${session.id}`);
 
@@ -48,7 +51,9 @@ export class SessionsListener {
    * Escuchar evento session.updated de USER_MS
    */
   @EventPattern(getMessagePattern('session.updated'))
-  async handleSessionUpdated(@Payload() session: any): Promise<void> {
+  async handleSessionUpdated(
+    @Payload() session: SessionPayload,
+  ): Promise<void> {
     try {
       this.logger.debug(`Received session.updated: ${session.id}`);
 

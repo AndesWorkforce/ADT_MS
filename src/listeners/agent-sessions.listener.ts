@@ -5,6 +5,7 @@ import { getMessagePattern, logError } from 'config';
 
 import { RawService } from '../raw/raw.service';
 import { AgentSessionRawDto } from '../raw/dto/agent-session-raw.dto';
+import { AgentSessionPayload } from 'src/listeners/listener.interfaces';
 
 @Controller()
 export class AgentSessionsListener {
@@ -12,7 +13,9 @@ export class AgentSessionsListener {
 
   constructor(private readonly rawService: RawService) {}
 
-  private toAgentSessionRaw(agentSession: any): AgentSessionRawDto {
+  private toAgentSessionRaw(
+    agentSession: AgentSessionPayload,
+  ): AgentSessionRawDto {
     return {
       agent_session_id: agentSession.id,
       contractor_id: agentSession.contractor_id,
@@ -36,7 +39,9 @@ export class AgentSessionsListener {
    * Escuchar evento agentSession.created de USER_MS
    */
   @EventPattern(getMessagePattern('agentSession.created'))
-  async handleAgentSessionCreated(@Payload() agentSession: any): Promise<void> {
+  async handleAgentSessionCreated(
+    @Payload() agentSession: AgentSessionPayload,
+  ): Promise<void> {
     try {
       this.logger.debug(
         `Received agentSession.created: ${agentSession.id} for agent ${agentSession.agent_id}`,
@@ -57,7 +62,9 @@ export class AgentSessionsListener {
    * Escuchar evento agentSession.updated de USER_MS
    */
   @EventPattern(getMessagePattern('agentSession.updated'))
-  async handleAgentSessionUpdated(@Payload() agentSession: any): Promise<void> {
+  async handleAgentSessionUpdated(
+    @Payload() agentSession: AgentSessionPayload,
+  ): Promise<void> {
     try {
       this.logger.debug(
         `Received agentSession.updated: ${agentSession.id} for agent ${agentSession.agent_id}`,

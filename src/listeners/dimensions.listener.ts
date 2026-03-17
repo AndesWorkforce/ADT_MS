@@ -4,6 +4,7 @@ import { EventPattern, Payload } from '@nestjs/microservices';
 import { getMessagePattern, logError } from 'config';
 
 import { RawService } from '../raw/raw.service';
+import { TeamPayload, ClientPayload } from 'src/listeners/listener.interfaces';
 
 @Controller()
 export class DimensionsListener {
@@ -15,7 +16,7 @@ export class DimensionsListener {
    * Escuchar evento team.created de USER_MS
    */
   @EventPattern(getMessagePattern('team.created'))
-  async handleTeamCreated(@Payload() team: any): Promise<void> {
+  async handleTeamCreated(@Payload() team: TeamPayload): Promise<void> {
     try {
       this.logger.debug(`Received team.created: ${team.id}`);
 
@@ -39,7 +40,7 @@ export class DimensionsListener {
    * Escuchar evento team.updated de USER_MS
    */
   @EventPattern(getMessagePattern('team.updated'))
-  async handleTeamUpdated(@Payload() team: any): Promise<void> {
+  async handleTeamUpdated(@Payload() team: TeamPayload): Promise<void> {
     try {
       this.logger.debug(`Received team.updated: ${team.id}`);
 
@@ -63,7 +64,7 @@ export class DimensionsListener {
    * Escuchar evento client.created de USER_MS
    */
   @EventPattern(getMessagePattern('client.created'))
-  async handleClientCreated(@Payload() client: any): Promise<void> {
+  async handleClientCreated(@Payload() client: ClientPayload): Promise<void> {
     try {
       this.logger.debug(`Received client.created: ${client.id}`);
 
@@ -91,7 +92,7 @@ export class DimensionsListener {
    * Escuchar evento client.updated de USER_MS
    */
   @EventPattern(getMessagePattern('client.updated'))
-  async handleClientUpdated(@Payload() client: any): Promise<void> {
+  async handleClientUpdated(@Payload() client: ClientPayload): Promise<void> {
     try {
       this.logger.debug(`Received client.updated: ${client.id}`);
 
