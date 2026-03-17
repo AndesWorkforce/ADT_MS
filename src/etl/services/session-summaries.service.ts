@@ -3,6 +3,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { envs } from 'config';
 import { ClickHouseService } from '../../clickhouse/clickhouse.service';
 import { RedisKeys, RedisService } from '../../redis';
+import { SessionSummaryDto } from '../dto/session-summary.dto';
 
 /**
  * Tipo de agrupación para métricas de sesión
@@ -166,7 +167,7 @@ export class SessionSummariesService {
     to?: string,
     days: number = 30,
     agentId?: string,
-  ): Promise<any[]> {
+  ): Promise<SessionSummaryDto[]> {
     const { effectiveAgentId, agentFilterSql } = this.buildAgentFilter(agentId);
     const cacheKey =
       RedisKeys.sessionSummariesByContractor(contractorId, from, to, days) +
@@ -177,17 +178,11 @@ export class SessionSummariesService {
       async () => {
         const dateFilter = this.buildDateFilter(from, to, days);
 
-        if (effectiveAgentId) {
-          const query = this.buildAgentViewQuery(
-            contractorId,
-            dateFilter,
-            agentFilterSql,
-          );
-          return await this.clickHouseService.query(query);
-        }
+        const query = effectiveAgentId
+          ? this.buildAgentViewQuery(contractorId, dateFilter, agentFilterSql)
+          : this.buildConsolidatedViewQuery(contractorId, dateFilter);
 
-        const query = this.buildConsolidatedViewQuery(contractorId, dateFilter);
-        return await this.clickHouseService.query(query);
+        return await this.clickHouseService.query<SessionSummaryDto>(query);
       },
       envs.redis.ttl,
     );
@@ -209,7 +204,7 @@ export class SessionSummariesService {
     to?: string,
     days: number = 30,
     agentId?: string,
-  ): Promise<Array<{ session_day: string; sessions: any[] }>> {
+  ): Promise<Array<{ session_day: string; sessions: SessionSummaryDto[] }>> {
     const { effectiveAgentId, agentFilterSql } = this.buildAgentFilter(agentId);
     const cacheKey =
       RedisKeys.sessionSummariesByContractor(contractorId, from, to, days) +
@@ -225,11 +220,14 @@ export class SessionSummariesService {
           ? this.buildAgentViewQuery(contractorId, dateFilter, agentFilterSql)
           : this.buildConsolidatedViewQuery(contractorId, dateFilter);
 
-        const sessions = (await this.clickHouseService.query(query)) as any[];
+        const sessions =
+          await this.clickHouseService.query<SessionSummaryDto>(query);
 
-        const groupedByDay = new Map<string, any[]>();
-        sessions.forEach((session: any) => {
-          const sessionDay = (session.session_start as string).split(' ')[0];
+        const groupedByDay = new Map<string, SessionSummaryDto[]>();
+        sessions.forEach((session) => {
+          const sessionDay = (session.session_start as unknown as string).split(
+            ' ',
+          )[0];
           if (!groupedByDay.has(sessionDay)) {
             groupedByDay.set(sessionDay, []);
           }
