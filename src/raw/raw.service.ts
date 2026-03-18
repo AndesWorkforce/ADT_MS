@@ -15,6 +15,23 @@ export class RawService {
   constructor(private readonly clickHouseService: ClickHouseService) {}
 
   /**
+   * Helper genérico para insertar en ClickHouse con logs y manejo de errores consistentes.
+   */
+  private async safeInsert(
+    table: string,
+    payload: Record<string, unknown>,
+    logContext: string,
+  ): Promise<void> {
+    try {
+      await this.clickHouseService.insert(table, payload);
+      this.logger.debug(logContext);
+    } catch (error) {
+      logError(this.logger, `Failed to insert into ${table}`, error);
+      throw error;
+    }
+  }
+
+  /**
    * Guardar evento en la tabla events_raw
    */
   async saveEvent(event: EventRawDto): Promise<void> {
@@ -96,8 +113,9 @@ export class RawService {
    * Guardar sesión en la tabla sessions_raw
    */
   async saveSession(session: SessionRawDto): Promise<void> {
-    try {
-      await this.clickHouseService.insert('sessions_raw', {
+    await this.safeInsert(
+      'sessions_raw',
+      {
         session_id: session.session_id,
         contractor_id: session.contractor_id,
         session_start: session.session_start,
@@ -105,23 +123,18 @@ export class RawService {
         total_duration: session.total_duration || null,
         created_at: session.created_at,
         updated_at: session.updated_at,
-      });
-
-      this.logger.debug(
-        `Session saved to sessions_raw: ${session.session_id} for contractor ${session.contractor_id}`,
-      );
-    } catch (error) {
-      logError(this.logger, 'Failed to save session to RAW', error);
-      throw error;
-    }
+      },
+      `Session saved to sessions_raw: ${session.session_id} for contractor ${session.contractor_id}`,
+    );
   }
 
   /**
    * Guardar sesión de agente en la tabla agent_sessions_raw
    */
   async saveAgentSession(agentSession: AgentSessionRawDto): Promise<void> {
-    try {
-      await this.clickHouseService.insert('agent_sessions_raw', {
+    await this.safeInsert(
+      'agent_sessions_raw',
+      {
         agent_session_id: agentSession.agent_session_id,
         contractor_id: agentSession.contractor_id,
         agent_id: agentSession.agent_id,
@@ -131,15 +144,9 @@ export class RawService {
         total_duration: agentSession.total_duration || null,
         created_at: agentSession.created_at,
         updated_at: agentSession.updated_at,
-      });
-
-      this.logger.debug(
-        `Agent session saved to agent_sessions_raw: ${agentSession.agent_session_id} for contractor ${agentSession.contractor_id}`,
-      );
-    } catch (error) {
-      logError(this.logger, 'Failed to save agent session to RAW', error);
-      throw error;
-    }
+      },
+      `Agent session saved to agent_sessions_raw: ${agentSession.agent_session_id} for contractor ${agentSession.contractor_id}`,
+    );
   }
 
   /**
@@ -147,8 +154,9 @@ export class RawService {
    * Usa el motor ReplacingMergeTree, por lo que las actualizaciones son manejadas por ClickHouse
    */
   async saveContractor(contractor: ContractorRawDto): Promise<void> {
-    try {
-      await this.clickHouseService.insert('contractor_info_raw', {
+    await this.safeInsert(
+      'contractor_info_raw',
+      {
         contractor_id: contractor.contractor_id,
         name: contractor.name,
         email: contractor.email || null,
@@ -161,15 +169,9 @@ export class RawService {
         isActive: contractor.isActive ? 1 : 0,
         created_at: contractor.created_at,
         updated_at: contractor.updated_at,
-      });
-
-      this.logger.debug(
-        `Contractor saved to contractor_info_raw: ${contractor.contractor_id}`,
-      );
-    } catch (error) {
-      logError(this.logger, 'Failed to save contractor to RAW', error);
-      throw error;
-    }
+      },
+      `Contractor saved to contractor_info_raw: ${contractor.contractor_id}`,
+    );
   }
 
   /**
@@ -177,21 +179,17 @@ export class RawService {
    * Usa el motor ReplacingMergeTree, por lo que las actualizaciones son manejadas por ClickHouse
    */
   async saveTeam(teamId: string, teamName: string): Promise<void> {
-    try {
-      await this.clickHouseService.insert('teams_dimension', {
+    const now = new Date();
+    await this.safeInsert(
+      'teams_dimension',
+      {
         team_id: teamId,
         team_name: teamName,
-        created_at: new Date(),
-        updated_at: new Date(),
-      });
-
-      this.logger.debug(
-        `Team saved to teams_dimension: ${teamId} - ${teamName}`,
-      );
-    } catch (error) {
-      logError(this.logger, 'Failed to save team to dimensions', error);
-      throw error;
-    }
+        created_at: now,
+        updated_at: now,
+      },
+      `Team saved to teams_dimension: ${teamId} - ${teamName}`,
+    );
   }
 
   /**
@@ -203,21 +201,17 @@ export class RawService {
     clientName: string,
     isActive: boolean = true,
   ): Promise<void> {
-    try {
-      await this.clickHouseService.insert('clients_dimension', {
+    const now = new Date();
+    await this.safeInsert(
+      'clients_dimension',
+      {
         client_id: clientId,
         client_name: clientName,
         isActive: isActive ? 1 : 0,
-        created_at: new Date(),
-        updated_at: new Date(),
-      });
-
-      this.logger.debug(
-        `Client saved to clients_dimension: ${clientId} - ${clientName}`,
-      );
-    } catch (error) {
-      logError(this.logger, 'Failed to save client to dimensions', error);
-      throw error;
-    }
+        created_at: now,
+        updated_at: now,
+      },
+      `Client saved to clients_dimension: ${clientId} - ${clientName}`,
+    );
   }
 }

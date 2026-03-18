@@ -7,6 +7,7 @@ import { RawService } from '../raw/raw.service';
 import { EventRawDto } from '../raw/dto/event-raw.dto';
 import { EventQueueService } from '../queues/services';
 import { RedisService } from '../redis/redis.service';
+import { EventCreatedPayload } from 'src/listeners/listener.interfaces';
 
 @Controller()
 export class EventsListener {
@@ -20,7 +21,9 @@ export class EventsListener {
   ) {}
 
   @EventPattern(getMessagePattern('event.created'))
-  async handleEventCreated(@Payload() event: any): Promise<void> {
+  async handleEventCreated(
+    @Payload() event: EventCreatedPayload,
+  ): Promise<void> {
     try {
       if (!event || !event.id) {
         this.logger.warn(

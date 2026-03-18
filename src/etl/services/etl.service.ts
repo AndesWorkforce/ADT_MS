@@ -37,32 +37,19 @@ export class EtlService {
     contractorId?: string,
   ): Promise<number> {
     try {
-      // Normalizar rango por defecto para evitar procesar demasiado si no se especifica
-      if (!fromDate && !toDate) {
-        // Procesar solo las últimas 2 horas por defecto
-        const now = new Date();
-        const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
-        fromDate = twoHoursAgo;
-        toDate = now;
-        this.logger.warn(
-          'processEventsToActivity called without range. Defaulting to last 2 hours to ensure idempotency.',
-        );
-      }
+      let totalInserted = 0;
+      const { from, to } = this.normalizeDateRange(
+        fromDate,
+        toDate,
+        2 * 60 * 60 * 1000,
+      );
 
       // 1) Procesar por día, solo si el día NO existe en destino (idempotencia sin DELETE)
-      const start = new Date(fromDate as Date);
-      const end = new Date(toDate as Date);
-      // Normalizar a 00:00 UTC para iteración por días
-      start.setHours(0, 0, 0, 0);
-      end.setHours(0, 0, 0, 0);
 
-      let totalInserted = 0;
-      for (
-        let d = new Date(start.getTime());
-        d.getTime() <= end.getTime();
-        d = new Date(d.getTime() + 24 * 60 * 60 * 1000)
-      ) {
-        const dayStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+      await this.iterateDays(from, to, async (day) => {
+        const dayStr = `${day.getUTCFullYear()}-${String(
+          day.getUTCMonth() + 1,
+        ).padStart(2, '0')}-${String(day.getUTCDate()).padStart(2, '0')}`;
 
         // Verificar existencia en destino (por contratista si se especifica)
         const contractorFilter = contractorId
@@ -76,37 +63,23 @@ export class EtlService {
         `);
         if ((exists[0]?.cnt || 0) > 0) {
           this.logger.log(
-            `⏭️ Skipping contractor_activity_15s for ${dayStr}${contractorId ? ` contractor=${contractorId}` : ''} (already populated)`,
+            `⏭️ Skipping contractor_activity_15s for ${dayStr}${
+              contractorId ? ` contractor=${contractorId}` : ''
+            } (already populated)`,
           );
-          continue;
+          return;
         }
 
         // Insertar solo ese día desde events_raw (filtro por contratista si se especifica)
+        const insertQueryPerDay = this.buildInsertActivityQuery(
+          day,
+          contractorId,
+        );
+        await this.clickHouseService.command(insertQueryPerDay);
+
         const eventsFilter = contractorId
           ? ` AND contractor_id = '${contractorId}'`
           : '';
-        const insertQueryPerDay = `
-          INSERT INTO contractor_activity_15s
-          SELECT
-            contractor_id,
-            agent_id,
-            session_id,
-            agent_session_id,
-            timestamp AS beat_timestamp,
-            if(
-              (toUInt32OrZero(JSON_VALUE(payload, '$.Keyboard.InputsCount'))
-               + toUInt32OrZero(JSON_VALUE(payload, '$.Mouse.ClicksCount'))) = 0,
-              1, 0
-            ) AS is_idle,
-            toUInt32OrZero(JSON_VALUE(payload, '$.Keyboard.InputsCount')) AS keyboard_count,
-            toUInt32OrZero(JSON_VALUE(payload, '$.Mouse.ClicksCount')) AS mouse_clicks,
-            toDate(timestamp) AS workday,
-            now() AS created_at
-          FROM events_raw
-          WHERE toDate(timestamp) = toDate('${dayStr}')
-          ${eventsFilter}
-        `;
-        await this.clickHouseService.command(insertQueryPerDay);
 
         // Contar insertados estimando por events_raw del día
         const insertedRes = await this.clickHouseService.query<{
@@ -133,10 +106,16 @@ export class EtlService {
         totalInserted += estimatedInserted;
         this.logger.log(
           `✅ Processed contractor_activity_15s for ${dayStr}. ` +
-            `Estimated inserted: ${estimatedInserted === 0 ? '0' : estimatedInserted.toLocaleString('en-US')}, ` +
-            `Actual rows in destination: ${actualCount === 0 ? '0' : actualCount.toLocaleString('en-US')}`,
+            `Estimated inserted: ${
+              estimatedInserted === 0
+                ? '0'
+                : estimatedInserted.toLocaleString('en-US')
+            }, ` +
+            `Actual rows in destination: ${
+              actualCount === 0 ? '0' : actualCount.toLocaleString('en-US')
+            }`,
         );
-      }
+      });
 
       this.logger.log(
         `✅ Total processed events to activity beats (days without existing data): ${totalInserted === 0 ? '0' : totalInserted.toLocaleString('en-US')}`,
@@ -151,6 +130,111 @@ export class EtlService {
   }
 
   /**
+   * Normaliza un rango de fechas. Si no se pasa nada, usa un rango corto hacia atrás
+   * para evitar procesar demasiado por defecto.
+   */
+  private normalizeDateRange(
+    fromDate: Date | undefined,
+    toDate: Date | undefined,
+    defaultWindowMs: number,
+    floorToDay: boolean = true,
+  ): { from: Date; to: Date } {
+    if (!fromDate && !toDate) {
+      const now = new Date();
+      const from = new Date(now.getTime() - defaultWindowMs);
+      this.logger.warn(
+        'normalizeDateRange called without range. Defaulting to a short window for safety.',
+      );
+      return { from, to: now };
+    }
+
+    if (fromDate && !toDate) {
+      const d = new Date(fromDate);
+      if (floorToDay) {
+        d.setUTCHours(0, 0, 0, 0);
+      }
+      return { from: d, to: d };
+    }
+
+    if (!fromDate && toDate) {
+      const d = new Date(toDate);
+      if (floorToDay) {
+        d.setUTCHours(0, 0, 0, 0);
+      }
+      return { from: d, to: d };
+    }
+
+    const from = new Date(fromDate as Date);
+    const to = new Date(toDate as Date);
+
+    if (floorToDay) {
+      from.setUTCHours(0, 0, 0, 0);
+      to.setUTCHours(0, 0, 0, 0);
+    }
+
+    return { from, to };
+  }
+
+  /**
+   * Itera día por día (UTC) desde `from` hasta `to`, inclusive.
+   */
+  private async iterateDays(
+    from: Date,
+    to: Date,
+    fn: (day: Date) => Promise<void>,
+  ): Promise<void> {
+    const start = new Date(from.getTime());
+    const end = new Date(to.getTime());
+
+    start.setUTCHours(0, 0, 0, 0);
+    end.setUTCHours(0, 0, 0, 0);
+
+    for (
+      let d = new Date(start.getTime());
+      d.getTime() <= end.getTime();
+      d = new Date(d.getTime() + 24 * 60 * 60 * 1000)
+    ) {
+      // Pasamos una copia para evitar mutaciones externas
+      await fn(new Date(d.getTime()));
+    }
+  }
+
+  /**
+   * Construye la query de INSERT SELECT para un día concreto de contractor_activity_15s.
+   */
+  private buildInsertActivityQuery(day: Date, contractorId?: string): string {
+    const dayStr = `${day.getUTCFullYear()}-${String(
+      day.getUTCMonth() + 1,
+    ).padStart(2, '0')}-${String(day.getUTCDate()).padStart(2, '0')}`;
+
+    const eventsFilter = contractorId
+      ? ` AND contractor_id = '${contractorId}'`
+      : '';
+
+    return `
+      INSERT INTO contractor_activity_15s
+      SELECT
+        contractor_id,
+        agent_id,
+        session_id,
+        agent_session_id,
+        timestamp AS beat_timestamp,
+        if(
+          (toUInt32OrZero(JSON_VALUE(payload, '$.Keyboard.InputsCount'))
+           + toUInt32OrZero(JSON_VALUE(payload, '$.Mouse.ClicksCount'))) = 0,
+          1, 0
+        ) AS is_idle,
+        toUInt32OrZero(JSON_VALUE(payload, '$.Keyboard.InputsCount')) AS keyboard_count,
+        toUInt32OrZero(JSON_VALUE(payload, '$.Mouse.ClicksCount')) AS mouse_clicks,
+        toDate(timestamp) AS workday,
+        now() AS created_at
+      FROM events_raw
+      WHERE toDate(timestamp) = toDate('${dayStr}')
+      ${eventsFilter}
+    `;
+  }
+
+  /**
    * Fuerza el reprocesamiento de eventos RAW → contractor_activity_15s.
    * Borra los datos existentes del rango y vuelve a insertar (DELETE + INSERT SELECT).
    * @param contractorId - Si se pasa, procesa solo ese contratista
@@ -162,20 +246,17 @@ export class EtlService {
   ): Promise<number> {
     try {
       // Rango por defecto: últimas 2 horas (evitar borrar demasiado por accidente)
-      if (!fromDate && !toDate) {
-        const now = new Date();
-        const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000);
-        fromDate = twoHoursAgo;
-        toDate = now;
-        this.logger.warn(
-          'processEventsToActivityForce called without range. Defaulting to last 2 hours.',
-        );
-      }
+      const { from, to } = this.normalizeDateRange(
+        fromDate,
+        toDate,
+        2 * 60 * 60 * 1000,
+        false,
+      );
 
-      const fromStr = fromDate ? this.formatDate(fromDate) : null;
-      const toStr = toDate ? this.formatDate(toDate) : null;
-      const fromDay = fromDate ? fromStr!.split(' ')[0] : null;
-      const toDay = toDate ? toStr!.split(' ')[0] : null;
+      const fromStr = from ? this.formatDate(from) : null;
+      const toStr = to ? this.formatDate(to) : null;
+      const fromDay = fromStr ? fromStr.split(' ')[0] : null;
+      const toDay = toStr ? toStr.split(' ')[0] : null;
 
       const contractorFilter = contractorId
         ? ` AND contractor_id = '${contractorId}'`
@@ -277,18 +358,13 @@ export class EtlService {
       // Construir lista de días a procesar
       const days: string[] = [];
       if (fromDate || toDate) {
-        const start = new Date((fromDate || toDate) as Date);
-        const end = new Date((toDate || fromDate) as Date);
-        start.setHours(0, 0, 0, 0);
-        end.setHours(0, 0, 0, 0);
-        for (
-          let d = new Date(start.getTime());
-          d.getTime() <= end.getTime();
-          d = new Date(d.getTime() + 24 * 60 * 60 * 1000)
-        ) {
-          const dayStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+        const { from, to } = this.normalizeDateRange(fromDate, toDate, 0, true);
+        await this.iterateDays(from, to, async (d) => {
+          const dayStr = `${d.getUTCFullYear()}-${String(
+            d.getUTCMonth() + 1,
+          ).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
           days.push(dayStr);
-        }
+        });
       } else if (workday) {
         const d = new Date(workday);
         d.setHours(0, 0, 0, 0);
@@ -448,43 +524,19 @@ export class EtlService {
           )
           GROUP BY contractor_id, workday
         ) app_map ON app_map.contractor_id = ca.contractor_id AND app_map.workday = ca.workday
-        -- JOIN para productivity_score: totales ponderados browser por día
+        -- JOIN para productivity_score: totales ponderados browser por día (peso por dominio desde domains_dimension cuando existe)
         LEFT JOIN (
           SELECT 
             contractor_id,
             toDate(timestamp) AS workday,
             sum(
               JSONExtractFloat(payload, 'browser', dc) *
-              ifNull(
-                if(
-                  arrayFirstIndex(x -> x = dc, de_exact_domains) > 0,
-                  de_exact_weights[arrayFirstIndex(x -> x = dc, de_exact_domains)],
-                  if(
-                    arrayFirstIndex(p -> startsWith(dc, p), dp_prefix_domains) > 0,
-                    dp_prefix_weights[arrayFirstIndex(p -> startsWith(dc, p), dp_prefix_domains)],
-                    0.5
-                  )
-                ),
-                0.5
-              )
+              ifNull(d.weight, 1)
             ) AS weighted_seconds,
             sum(JSONExtractFloat(payload, 'browser', dc)) AS total_seconds
           FROM events_raw
-          CROSS JOIN (
-            SELECT 
-              groupArray(domain) AS de_exact_domains,
-              groupArray(weight) AS de_exact_weights
-            FROM domains_dimension
-            WHERE right(domain, 1) != '.'
-          ) de
-          CROSS JOIN (
-            SELECT 
-              groupArray(domain) AS dp_prefix_domains,
-              groupArray(weight) AS dp_prefix_weights
-            FROM domains_dimension
-            WHERE right(domain, 1) = '.'
-          ) dp
           ARRAY JOIN JSONExtractKeys(payload, 'browser') AS dc
+          LEFT JOIN domains_dimension d ON d.domain = dc
           WHERE toDate(timestamp) = toDate('${dayStr}')
           ${contractorFilter}
           GROUP BY contractor_id, workday
@@ -640,11 +692,11 @@ export class EtlService {
             0.35 * (100.0 * sum(if(a.is_idle = 0, 1, 0)) / nullIf(count(), 0)) +
             0.20 * least(100.0, 15.0 * ln(1 + (((sum(a.keyboard_count) + sum(a.mouse_clicks)) / nullIf(count() * 15 / 60, 0)) / 2.0))) +
             0.30 * ifNull(
-              100.0 * greatest(0.0, least(1.0, ((any(app.weighted_seconds) / nullIf(any(app.total_seconds), 0)) - 0.2) / 0.8)),
+              100.0 * greatest(0.0, least(1.0, ((any(app.weighted_seconds) / nullIf(any(app.app_total_seconds), 0)) - 0.2) / 0.8)),
               50.0
             ) +
             0.15 * ifNull(
-              100.0 * greatest(0.0, least(1.0, ((any(web.weighted_seconds) / nullIf(any(web.total_seconds), 0)) - 0.2) / 0.8)),
+              100.0 * greatest(0.0, least(1.0, ((any(web.weighted_seconds) / nullIf(any(web.web_total_seconds), 0)) - 0.2) / 0.8)),
               50.0
             )
           )) AS productivity_score,
@@ -655,7 +707,7 @@ export class EtlService {
             e.session_id,
             e.agent_id,
             sum(JSONExtractFloat(e.payload, 'AppUsage', app) * ifNull(d.weight, 0.5)) AS weighted_seconds,
-            sum(JSONExtractFloat(e.payload, 'AppUsage', app)) AS total_seconds
+            sum(JSONExtractFloat(e.payload, 'AppUsage', app)) AS app_total_seconds
           FROM events_raw e
           ARRAY JOIN JSONExtractKeys(e.payload, 'AppUsage') AS app
           LEFT JOIN apps_dimension d ON d.name = app
@@ -667,36 +719,12 @@ export class EtlService {
             e.agent_id,
             sum(
               JSONExtractFloat(e.payload, 'browser', dc) *
-              ifNull(
-                if(
-                  arrayFirstIndex(x -> x = dc, de_exact_domains) > 0,
-                  de_exact_weights[arrayFirstIndex(x -> x = dc, de_exact_domains)],
-                  if(
-                    arrayFirstIndex(p -> startsWith(dc, p), dp_prefix_domains) > 0,
-                    dp_prefix_weights[arrayFirstIndex(p -> startsWith(dc, p), dp_prefix_domains)],
-                    0.5
-                  )
-                ),
-                0.5
-              )
+              ifNull(d.weight, 1)
             ) AS weighted_seconds,
-            sum(JSONExtractFloat(e.payload, 'browser', dc)) AS total_seconds
+            sum(JSONExtractFloat(e.payload, 'browser', dc)) AS web_total_seconds
           FROM events_raw e
-          CROSS JOIN (
-            SELECT 
-              groupArray(domain) AS de_exact_domains,
-              groupArray(weight) AS de_exact_weights
-            FROM domains_dimension
-            WHERE right(domain, 1) != '.'
-          ) de
-          CROSS JOIN (
-            SELECT 
-              groupArray(domain) AS dp_prefix_domains,
-              groupArray(weight) AS dp_prefix_weights
-            FROM domains_dimension
-            WHERE right(domain, 1) = '.'
-          ) dp
           ARRAY JOIN JSONExtractKeys(e.payload, 'browser') AS dc
+          LEFT JOIN domains_dimension d ON d.domain = dc
           GROUP BY e.session_id, e.agent_id
         ) web ON web.session_id = a.session_id AND coalesce(web.agent_id, '') = coalesce(a.agent_id, '')
         ${sessionFilter}
@@ -747,6 +775,128 @@ export class EtlService {
     } catch (error) {
       this.logger.error(
         `Error processing activity to session summary: ${error.message}`,
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Reprocesa TODOS los resúmenes de sesión (`session_summary`) para un rango de fechas,
+   * para TODOS los contractors. Útil para corregir errores en la fórmula de productividad.
+   *
+   * Pasos:
+   * - DELETE de filas en `session_summary` cuyo session_start esté entre from/to.
+   * - INSERT SELECT desde `contractor_activity_15s` (mismas joins de apps y browser) sin cláusula NOT IN.
+   */
+  async reprocessSessionSummariesForDateRange(
+    fromDate: Date,
+    toDate: Date,
+  ): Promise<number> {
+    try {
+      const fromStr = fromDate.toISOString().split('T')[0];
+      const toStr = toDate.toISOString().split('T')[0];
+
+      this.logger.log(
+        `🔄 Reprocessing session_summary for date range ${fromStr} to ${toStr} (ALL contractors)`,
+      );
+
+      // 1) Borrar todas las filas en el rango de fechas
+      await this.clickHouseService.command(`
+        ALTER TABLE session_summary DELETE
+        WHERE toDate(session_start) >= toDate('${fromStr}')
+          AND toDate(session_start) <= toDate('${toStr}')
+      `);
+
+      // 2) Insertar nuevamente todas las sesiones del rango desde contractor_activity_15s
+      const insertQuery = `
+        INSERT INTO session_summary (
+          session_id,
+          contractor_id,
+          agent_id,
+          session_start,
+          session_end,
+          total_seconds,
+          active_seconds,
+          idle_seconds,
+          productivity_score,
+          created_at
+        )
+        SELECT
+          a.session_id,
+          any(a.contractor_id) AS contractor_id,
+          any(a.agent_id) AS agent_id,
+          min(a.beat_timestamp) AS session_start,
+          max(a.beat_timestamp) AS session_end,
+          count() * 15 AS total_seconds,
+          sum(if(a.is_idle = 0, 15, 0)) AS active_seconds,
+          sum(if(a.is_idle = 1, 15, 0)) AS idle_seconds,
+          least(100.0, greatest(0.0,
+            0.35 * (100.0 * sum(if(a.is_idle = 0, 1, 0)) / nullIf(count(), 0)) +
+            0.20 * least(100.0, 15.0 * ln(1 + (((sum(a.keyboard_count) + sum(a.mouse_clicks)) / nullIf(count() * 15 / 60, 0)) / 2.0))) +
+            0.30 * ifNull(
+              100.0 * greatest(0.0, least(1.0, ((any(app.weighted_seconds) / nullIf(any(app.app_total_seconds), 0)) - 0.2) / 0.8)),
+              50.0
+            ) +
+            0.15 * ifNull(
+              100.0 * greatest(0.0, least(1.0, ((any(web.weighted_seconds) / nullIf(any(web.web_total_seconds), 0)) - 0.2) / 0.8)),
+              50.0
+            )
+          )) AS productivity_score,
+          now() AS created_at
+        FROM contractor_activity_15s a
+        LEFT JOIN (
+          SELECT 
+            e.session_id,
+            e.agent_id,
+            sum(JSONExtractFloat(e.payload, 'AppUsage', app) * ifNull(d.weight, 0.5)) AS weighted_seconds,
+            sum(JSONExtractFloat(e.payload, 'AppUsage', app)) AS app_total_seconds
+          FROM events_raw e
+          ARRAY JOIN JSONExtractKeys(e.payload, 'AppUsage') AS app
+          LEFT JOIN apps_dimension d ON d.name = app
+          GROUP BY e.session_id, e.agent_id
+        ) app ON app.session_id = a.session_id AND coalesce(app.agent_id, '') = coalesce(a.agent_id, '')
+        LEFT JOIN (
+          SELECT 
+            e.session_id,
+            e.agent_id,
+            sum(
+              JSONExtractFloat(e.payload, 'browser', dc) *
+              ifNull(d.weight, 1)
+            ) AS weighted_seconds,
+            sum(JSONExtractFloat(e.payload, 'browser', dc)) AS web_total_seconds
+          FROM events_raw e
+          ARRAY JOIN JSONExtractKeys(e.payload, 'browser') AS dc
+          LEFT JOIN domains_dimension d ON d.domain = dc
+          GROUP BY e.session_id, e.agent_id
+        ) web ON web.session_id = a.session_id AND coalesce(web.agent_id, '') = coalesce(a.agent_id, '')
+        WHERE a.session_id IS NOT NULL
+          AND toDate(a.beat_timestamp) >= toDate('${fromStr}')
+          AND toDate(a.beat_timestamp) <= toDate('${toStr}')
+        GROUP BY a.session_id, a.agent_id
+        SETTINGS max_partitions_per_insert_block=1000
+      `;
+
+      await this.clickHouseService.command(insertQuery);
+
+      // 3) Contar cuántos resúmenes quedaron en el rango
+      const countRes = await this.clickHouseService.query<{ cnt: number }>(`
+        SELECT count() AS cnt
+        FROM session_summary
+        WHERE toDate(session_start) >= toDate('${fromStr}')
+          AND toDate(session_start) <= toDate('${toStr}')
+      `);
+
+      const count = Number(countRes[0]?.cnt || 0);
+      this.logger.log(
+        `✅ Reprocessed ${count.toLocaleString(
+          'en-US',
+        )} session summaries for date range ${fromStr} to ${toStr}`,
+      );
+
+      return count;
+    } catch (error) {
+      this.logger.error(
+        `Error reprocessing session summaries for range: ${error.message}`,
       );
       throw error;
     }

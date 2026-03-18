@@ -10,6 +10,7 @@ import type {
   BrowserUsageData,
 } from '../transformers/activity-to-daily-metrics.transformer';
 import { RedisKeys, RedisService } from 'src/redis';
+import { ActivityRepository } from './activity-repository.service';
 
 @Injectable()
 export class RealtimeMetricsService {
@@ -20,6 +21,7 @@ export class RealtimeMetricsService {
     private readonly redisService: RedisService,
     private readonly usageDataService: UsageDataService,
     private readonly activityToDailyMetricsTransformer: ActivityToDailyMetricsTransformer,
+    private readonly activityRepository: ActivityRepository,
   ) {}
 
   /**
@@ -122,26 +124,11 @@ export class RealtimeMetricsService {
   ): Promise<any> {
     const workdayStr = workday.toLocaleDateString('en-CA');
 
-    // Leer beats del día
-    const beatsQuery = `
-      SELECT 
-        contractor_id,
-        agent_id,
-        session_id,
-        agent_session_id,
-        beat_timestamp,
-        is_idle,
-        keyboard_count,
-        mouse_clicks,
-        workday
-      FROM contractor_activity_15s
-      WHERE contractor_id = '${contractorId}'
-        AND toDate(beat_timestamp) = '${workdayStr}'
-      ORDER BY beat_timestamp
-    `;
-
-    const beats =
-      await this.clickHouseService.query<ContractorActivity15sDto>(beatsQuery);
+    // Leer beats del día desde el repositorio
+    const beats = await this.activityRepository.getBeatsForWorkday(
+      contractorId,
+      workdayStr,
+    );
 
     if (beats.length === 0) {
       return {
