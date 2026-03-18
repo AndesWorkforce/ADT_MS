@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+﻿import { Injectable, Logger } from '@nestjs/common';
 
 import { ClickHouseService } from '../../clickhouse/clickhouse.service';
 import {
@@ -99,7 +99,7 @@ export class UsageDataService {
     workday: Date,
     agentId?: string,
   ): Promise<AppUsageData[]> {
-    const workdayStr = workday.toISOString().split('T')[0];
+    const workdayStr = workday.toLocaleDateString('en-CA');
     const agentFilter = agentId ? `AND agent_id = '${agentId}'` : '';
 
     try {
@@ -153,7 +153,7 @@ export class UsageDataService {
     workday: Date,
     agentId?: string,
   ): Promise<BrowserUsageData[]> {
-    const workdayStr = workday.toISOString().split('T')[0];
+    const workdayStr = workday.toLocaleDateString('en-CA');
     const agentFilter = agentId ? `AND agent_id = '${agentId}'` : '';
 
     try {
@@ -206,8 +206,8 @@ export class UsageDataService {
     limit?: number,
     agentId?: string,
   ): Promise<AppUsageData[]> {
-    const fromStr = fromDate.toISOString().split('T')[0];
-    const toStr = toDate.toISOString().split('T')[0];
+    const fromStr = fromDate.toLocaleDateString('en-CA');
+    const toStr = toDate.toLocaleDateString('en-CA');
 
     // Calcular si usar LIMIT basado en el rango
     const daysDiff =
@@ -275,8 +275,8 @@ export class UsageDataService {
     limit?: number,
     agentId?: string,
   ): Promise<BrowserUsageData[]> {
-    const fromStr = fromDate.toISOString().split('T')[0];
-    const toStr = toDate.toISOString().split('T')[0];
+    const fromStr = fromDate.toLocaleDateString('en-CA');
+    const toStr = toDate.toLocaleDateString('en-CA');
 
     // Calcular si usar LIMIT basado en el rango
     const daysDiff =
@@ -336,8 +336,8 @@ export class UsageDataService {
     fromDate: Date,
     toDate: Date,
   ): Promise<AppUsageData[]> {
-    const fromStr = fromDate.toISOString().split('T')[0];
-    const toStr = toDate.toISOString().split('T')[0];
+    const fromStr = fromDate.toLocaleDateString('en-CA');
+    const toStr = toDate.toLocaleDateString('en-CA');
 
     try {
       const query = `
@@ -393,8 +393,8 @@ export class UsageDataService {
     fromDate: Date,
     toDate: Date,
   ): Promise<BrowserUsageData[]> {
-    const fromStr = fromDate.toISOString().split('T')[0];
-    const toStr = toDate.toISOString().split('T')[0];
+    const fromStr = fromDate.toLocaleDateString('en-CA');
+    const toStr = toDate.toLocaleDateString('en-CA');
 
     try {
       const query = `
@@ -450,8 +450,8 @@ export class UsageDataService {
       return new Map();
     }
 
-    const fromStr = fromDate.toISOString().split('T')[0];
-    const toStr = toDate.toISOString().split('T')[0];
+    const fromStr = fromDate.toLocaleDateString('en-CA');
+    const toStr = toDate.toLocaleDateString('en-CA');
     const contractorIdsList = contractorIds.map((id) => `'${id}'`).join(',');
 
     try {
@@ -528,8 +528,8 @@ export class UsageDataService {
       return new Map();
     }
 
-    const fromStr = fromDate.toISOString().split('T')[0];
-    const toStr = toDate.toISOString().split('T')[0];
+    const fromStr = fromDate.toLocaleDateString('en-CA');
+    const toStr = toDate.toLocaleDateString('en-CA');
     const contractorIdsList = contractorIds.map((id) => `'${id}'`).join(',');
 
     try {

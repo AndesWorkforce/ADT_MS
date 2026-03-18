@@ -74,6 +74,8 @@ services:
         INACTIVITY_SCAN_INTERVAL_MINUTES: ${INACTIVITY_SCAN_INTERVAL_MINUTES:-10}
     container_name: andes-adt-ms
     restart: unless-stopped
+    environment:
+      TZ: America/New_York
     ports:
       - '${PORT:-3005}:${PORT:-3005}'
     healthcheck:
