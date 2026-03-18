@@ -54,13 +54,13 @@ export class EtlQueueService {
 
       const dayStr = effectiveWorkday.toISOString().slice(0, 10); // YYYY-MM-DD
 
-      // JobId determinista para idempotencia:
-      // Mismo día + mismos contractors + mismo force → mismo jobId → BullMQ ignora duplicado
+      // JobId incluye timestamp para evitar reutilizar jobs fallidos
       const contractorSuffix = contractorIds?.length
         ? `-c${contractorIds.sort().join(',')}`
         : '';
       const forceSuffix = forceRecalculate ? '-force' : '';
-      const jobId = `daily-metrics-${dayStr}${contractorSuffix}${forceSuffix}`;
+      const timestampSuffix = `-${Date.now()}`;
+      const jobId = `daily-metrics-${dayStr}${contractorSuffix}${forceSuffix}${timestampSuffix}`;
 
       const jobData: EtlJobData = {
         jobType: JobType.DAILY_METRICS,
@@ -112,8 +112,8 @@ export class EtlQueueService {
     contractorId: string,
   ): Promise<string> {
     try {
-      // JobId determinista: misma sesión → mismo jobId → BullMQ ignora duplicado
-      const jobId = `session-summary-${sessionId}`;
+      // JobId incluye timestamp para permitir reintentos/asistencias múltiples
+      const jobId = `session-summary-${sessionId}-${Date.now()}`;
 
       const jobData: EtlJobData = {
         jobType: JobType.SESSION_SUMMARIES,

@@ -3,6 +3,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { envs } from 'config';
 import { ClickHouseService } from '../../clickhouse/clickhouse.service';
 import { RedisKeys, RedisService } from '../../redis';
+import { SessionSummaryDto } from '../dto/session-summary.dto';
 
 /**
  * Tipo de agrupación para métricas de sesión
@@ -32,6 +33,124 @@ export class SessionSummariesService {
     private readonly redisService: RedisService,
   ) {}
 
+  private buildDateFilter(
+    from?: string,
+    to?: string,
+    days: number = 30,
+  ): string {
+    if (from && to) {
+      const fromDate = from.split('T')[0];
+      const toDate = to.split('T')[0];
+      return `toDate(session_start) >= '${fromDate}' AND toDate(session_start) <= '${toDate}'`;
+    }
+    return `toDate(session_start) >= today() - ${days}`;
+  }
+
+  private buildAgentFilter(agentId?: string): {
+    effectiveAgentId?: string;
+    agentFilterSql: string;
+  } {
+    const effectiveAgentId =
+      agentId && agentId !== 'consolidated' ? agentId : undefined;
+    const agentFilterSql = effectiveAgentId
+      ? `AND agent_id = '${effectiveAgentId}'`
+      : '';
+    return { effectiveAgentId, agentFilterSql };
+  }
+
+  private buildAgentViewQuery(
+    contractorId: string,
+    dateFilter: string,
+    agentFilterSql: string,
+  ): string {
+    // Vista por agente: usar duración calendario, escalando active/idle
+    return `
+      SELECT 
+        session_id,
+        contractor_id,
+        agent_id,
+        session_start,
+        session_end,
+        dateDiff('second', session_start, session_end) AS total_seconds,
+        round(
+          dateDiff('second', session_start, session_end)
+          * active_seconds
+          / nullIf(total_seconds, 0)
+        ) AS active_seconds,
+        greatest(
+          0,
+          dateDiff('second', session_start, session_end) -
+          round(
+            dateDiff('second', session_start, session_end)
+            * active_seconds
+            / nullIf(total_seconds, 0)
+          )
+        ) AS idle_seconds,
+        productivity_score,
+        created_at
+      FROM session_summary
+      WHERE contractor_id = '${contractorId}'
+        AND ${dateFilter}
+        ${agentFilterSql}
+      ORDER BY session_start DESC
+    `;
+  }
+
+  private buildConsolidatedViewQuery(
+    contractorId: string,
+    dateFilter: string,
+  ): string {
+    // Consolidado: una fila por session_id
+    return `
+      SELECT 
+        session_id,
+        contractor_id,
+        agent_id,
+        session_start,
+        session_end,
+        dateDiff('second', session_start, session_end) AS total_seconds,
+        round(
+          dateDiff('second', session_start, session_end)
+          * active_seconds_sum
+          / nullIf(total_seconds_sum, 0)
+        ) AS active_seconds,
+        greatest(
+          0,
+          dateDiff('second', session_start, session_end) -
+          round(
+            dateDiff('second', session_start, session_end)
+            * active_seconds_sum
+            / nullIf(total_seconds_sum, 0)
+          )
+        ) AS idle_seconds,
+        round(
+          productivity_numerator / nullIf(total_seconds_sum, 0),
+          2
+        ) AS productivity_score,
+        created_at
+      FROM (
+        SELECT 
+          session_id,
+          contractor_id,
+          any(agent_id) AS agent_id,
+          min(session_start) AS session_start,
+          max(session_end) AS session_end,
+          sum(total_seconds) AS total_seconds_sum,
+          sum(active_seconds) AS active_seconds_sum,
+          sum(productivity_score * total_seconds) AS productivity_numerator,
+          max(created_at) AS created_at
+        FROM (
+          SELECT session_id, contractor_id, agent_id, session_start, session_end,
+            total_seconds, active_seconds, idle_seconds, productivity_score, created_at
+          FROM session_summary
+          WHERE contractor_id = '${contractorId}' AND ${dateFilter}
+        ) AS t
+        GROUP BY session_id, contractor_id
+      ) AS g
+      ORDER BY session_start DESC
+    `;
+  }
+
   /**
    * Obtiene resúmenes de sesión de un contractor.
    * Con agentId: solo sesiones de ese agente. Sin agentId (consolidado): una fila por session_id (métricas agregadas).
@@ -48,9 +167,8 @@ export class SessionSummariesService {
     to?: string,
     days: number = 30,
     agentId?: string,
-  ): Promise<any[]> {
-    const effectiveAgentId =
-      agentId && agentId !== 'consolidated' ? agentId : undefined;
+  ): Promise<SessionSummaryDto[]> {
+    const { effectiveAgentId, agentFilterSql } = this.buildAgentFilter(agentId);
     const cacheKey =
       RedisKeys.sessionSummariesByContractor(contractorId, from, to, days) +
       (effectiveAgentId ? `:agent:${effectiveAgentId}` : ':consolidated');
@@ -58,104 +176,13 @@ export class SessionSummariesService {
     return this.redisService.getOrSet(
       cacheKey,
       async () => {
-        let dateFilter: string;
-        if (from && to) {
-          const fromDate = from.split('T')[0];
-          const toDate = to.split('T')[0];
-          dateFilter = `toDate(session_start) >= '${fromDate}' AND toDate(session_start) <= '${toDate}'`;
-        } else {
-          dateFilter = `toDate(session_start) >= today() - ${days}`;
-        }
+        const dateFilter = this.buildDateFilter(from, to, days);
 
-        const agentFilter = effectiveAgentId
-          ? `AND agent_id = '${effectiveAgentId}'`
-          : '';
+        const query = effectiveAgentId
+          ? this.buildAgentViewQuery(contractorId, dateFilter, agentFilterSql)
+          : this.buildConsolidatedViewQuery(contractorId, dateFilter);
 
-        if (effectiveAgentId) {
-          // Vista por agente: usar duración calendario, escalando active/idle
-          const query = `
-            SELECT 
-              session_id,
-              contractor_id,
-              agent_id,
-              session_start,
-              session_end,
-              dateDiff('second', session_start, session_end) AS total_seconds,
-              round(
-                dateDiff('second', session_start, session_end)
-                * active_seconds
-                / nullIf(total_seconds, 0)
-              ) AS active_seconds,
-              greatest(
-                0,
-                dateDiff('second', session_start, session_end) -
-                round(
-                  dateDiff('second', session_start, session_end)
-                  * active_seconds
-                  / nullIf(total_seconds, 0)
-                )
-              ) AS idle_seconds,
-              productivity_score,
-              created_at
-            FROM session_summary
-            WHERE contractor_id = '${contractorId}'
-              AND ${dateFilter}
-              ${agentFilter}
-            ORDER BY session_start DESC
-          `;
-          return await this.clickHouseService.query(query);
-        }
-
-        // Consolidado: una fila por session_id
-        const query = `
-          SELECT 
-            session_id,
-            contractor_id,
-            agent_id,
-            session_start,
-            session_end,
-            dateDiff('second', session_start, session_end) AS total_seconds,
-            round(
-              dateDiff('second', session_start, session_end)
-              * active_seconds_sum
-              / nullIf(total_seconds_sum, 0)
-            ) AS active_seconds,
-            greatest(
-              0,
-              dateDiff('second', session_start, session_end) -
-              round(
-                dateDiff('second', session_start, session_end)
-                * active_seconds_sum
-                / nullIf(total_seconds_sum, 0)
-              )
-            ) AS idle_seconds,
-            round(
-              productivity_numerator / nullIf(total_seconds_sum, 0),
-              2
-            ) AS productivity_score,
-            created_at
-          FROM (
-            SELECT 
-              session_id,
-              contractor_id,
-              any(agent_id) AS agent_id,
-              min(session_start) AS session_start,
-              max(session_end) AS session_end,
-              sum(total_seconds) AS total_seconds_sum,
-              sum(active_seconds) AS active_seconds_sum,
-              sum(productivity_score * total_seconds) AS productivity_numerator,
-              max(created_at) AS created_at
-            FROM (
-              SELECT session_id, contractor_id, agent_id, session_start, session_end,
-                total_seconds, active_seconds, idle_seconds, productivity_score, created_at
-              FROM session_summary
-              WHERE contractor_id = '${contractorId}' AND ${dateFilter}
-            ) AS t
-            GROUP BY session_id, contractor_id
-          ) AS g
-          ORDER BY session_start DESC
-        `;
-        return await this.clickHouseService.query(query);
+        return await this.clickHouseService.query<SessionSummaryDto>(query);
       },
       envs.redis.ttl,
     );
@@ -177,9 +204,8 @@ export class SessionSummariesService {
     to?: string,
     days: number = 30,
     agentId?: string,
-  ): Promise<Array<{ session_day: string; sessions: any[] }>> {
-    const effectiveAgentId =
-      agentId && agentId !== 'consolidated' ? agentId : undefined;
+  ): Promise<Array<{ session_day: string; sessions: SessionSummaryDto[] }>> {
+    const { effectiveAgentId, agentFilterSql } = this.buildAgentFilter(agentId);
     const cacheKey =
       RedisKeys.sessionSummariesByContractor(contractorId, from, to, days) +
       ':by-day' +
@@ -188,109 +214,20 @@ export class SessionSummariesService {
     return this.redisService.getOrSet(
       cacheKey,
       async () => {
-        let dateFilter: string;
-        if (from && to) {
-          const fromDate = from.split('T')[0];
-          const toDate = to.split('T')[0];
-          dateFilter = `toDate(session_start) >= '${fromDate}' AND toDate(session_start) <= '${toDate}'`;
-        } else {
-          dateFilter = `toDate(session_start) >= today() - ${days}`;
-        }
+        const dateFilter = this.buildDateFilter(from, to, days);
 
-        const agentFilter = effectiveAgentId
-          ? `AND agent_id = '${effectiveAgentId}'`
-          : '';
+        const query = effectiveAgentId
+          ? this.buildAgentViewQuery(contractorId, dateFilter, agentFilterSql)
+          : this.buildConsolidatedViewQuery(contractorId, dateFilter);
 
-        let sessions: any[];
-        if (effectiveAgentId) {
-          // Vista por agente: usar duración calendario, escalando active/idle
-          const query = `
-            SELECT 
-              session_id,
-              contractor_id,
-              agent_id,
-              session_start,
-              session_end,
-              dateDiff('second', session_start, session_end) AS total_seconds,
-              round(
-                dateDiff('second', session_start, session_end)
-                * active_seconds
-                / nullIf(total_seconds, 0)
-              ) AS active_seconds,
-              greatest(
-                0,
-                dateDiff('second', session_start, session_end) -
-                round(
-                  dateDiff('second', session_start, session_end)
-                  * active_seconds
-                  / nullIf(total_seconds, 0)
-                )
-              ) AS idle_seconds,
-              productivity_score,
-              created_at
-            FROM session_summary
-            WHERE contractor_id = '${contractorId}'
-              AND ${dateFilter}
-              ${agentFilter}
-            ORDER BY session_start DESC
-          `;
-          sessions = (await this.clickHouseService.query(query)) as any[];
-        } else {
-          // Consolidado: una fila por session_id
-          const query = `
-            SELECT 
-              session_id,
-              contractor_id,
-              agent_id,
-              session_start,
-              session_end,
-              dateDiff('second', session_start, session_end) AS total_seconds,
-              round(
-                dateDiff('second', session_start, session_end)
-                * active_seconds_sum
-                / nullIf(total_seconds_sum, 0)
-              ) AS active_seconds,
-              greatest(
-                0,
-                dateDiff('second', session_start, session_end) -
-                round(
-                  dateDiff('second', session_start, session_end)
-                  * active_seconds_sum
-                  / nullIf(total_seconds_sum, 0)
-                )
-              ) AS idle_seconds,
-              round(
-                productivity_numerator / nullIf(total_seconds_sum, 0),
-                2
-              ) AS productivity_score,
-              created_at
-            FROM (
-              SELECT 
-                session_id,
-                contractor_id,
-                any(agent_id) AS agent_id,
-                min(session_start) AS session_start,
-                max(session_end) AS session_end,
-                sum(total_seconds) AS total_seconds_sum,
-                sum(active_seconds) AS active_seconds_sum,
-                sum(productivity_score * total_seconds) AS productivity_numerator,
-                max(created_at) AS created_at
-              FROM (
-                SELECT session_id, contractor_id, agent_id, session_start, session_end,
-                  total_seconds, active_seconds, idle_seconds, productivity_score, created_at
-                FROM session_summary
-                WHERE contractor_id = '${contractorId}' AND ${dateFilter}
-              ) AS t
-              GROUP BY session_id, contractor_id
-            ) AS g
-            ORDER BY session_start DESC
-          `;
-          sessions = (await this.clickHouseService.query(query)) as any[];
-        }
+        const sessions =
+          await this.clickHouseService.query<SessionSummaryDto>(query);
 
-        const groupedByDay = new Map<string, any[]>();
-        sessions.forEach((session: any) => {
-          const sessionDay = (session.session_start as string).split(' ')[0];
+        const groupedByDay = new Map<string, SessionSummaryDto[]>();
+        sessions.forEach((session) => {
+          const sessionDay = (session.session_start as unknown as string).split(
+            ' ',
+          )[0];
           if (!groupedByDay.has(sessionDay)) {
             groupedByDay.set(sessionDay, []);
           }
@@ -776,36 +713,12 @@ export class SessionSummariesService {
                 toHour(timestamp) AS hour,
                 sum(
                   JSONExtractFloat(payload, 'browser', dc) *
-                  ifNull(
-                    if(
-                      arrayFirstIndex(x -> x = dc, de_exact_domains) > 0,
-                      de_exact_weights[arrayFirstIndex(x -> x = dc, de_exact_domains)],
-                      if(
-                        arrayFirstIndex(p -> startsWith(dc, p), dp_prefix_domains) > 0,
-                        dp_prefix_weights[arrayFirstIndex(p -> startsWith(dc, p), dp_prefix_domains)],
-                        0.5
-                      )
-                    ),
-                    0.5
-                  )
+                  ifNull(d.weight, 1)
                 ) AS weighted_seconds,
                 sum(JSONExtractFloat(payload, 'browser', dc)) AS total_seconds
               FROM events_raw
-              CROSS JOIN (
-                SELECT
-                  groupArray(domain) AS de_exact_domains,
-                  groupArray(weight) AS de_exact_weights
-                FROM domains_dimension
-                WHERE right(domain, 1) != '.'
-              ) de
-              CROSS JOIN (
-                SELECT
-                  groupArray(domain) AS dp_prefix_domains,
-                  groupArray(weight) AS dp_prefix_weights
-                FROM domains_dimension
-                WHERE right(domain, 1) = '.'
-              ) dp
               ARRAY JOIN JSONExtractKeys(payload, 'browser') AS dc
+              LEFT JOIN domains_dimension d ON d.domain = dc
               WHERE contractor_id = '${contractorId}'
                 AND ${dateFilterEvents}
                 AND toHour(timestamp) >= ${startHour}

@@ -861,10 +861,36 @@ export class AdtListener {
    */
   @MessagePattern(getMessagePattern('adt.processSessionSummaries'))
   async processSessionSummaries(
-    @Payload() data: { sessionId?: string; contractorId?: string },
+    @Payload()
+    data: {
+      sessionId?: string;
+      contractorId?: string;
+      from?: string;
+      to?: string;
+    },
   ) {
     try {
-      const { sessionId, contractorId } = data;
+      const { sessionId, contractorId, from, to } = data;
+
+      // Nuevo modo: rango de fechas completo (from/to) para TODOS los contractors.
+      // En este modo, se ejecuta de forma síncrona y NO se usa la cola BullMQ.
+      if (from && to) {
+        const fromDate = new Date(from);
+        const toDate = new Date(to);
+
+        const count =
+          await this.etlService.reprocessSessionSummariesForDateRange(
+            fromDate,
+            toDate,
+          );
+
+        return {
+          message:
+            'Session summaries processed successfully for date range (full recompute)',
+          queued: false,
+          count,
+        };
+      }
 
       // Encolar job en BullMQ si la cola ETL está habilitada
       if (envs.queues.useEtlQueue && this.etlQueueService) {

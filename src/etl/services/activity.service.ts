@@ -1,8 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 
 import { envs } from 'config';
-import { ClickHouseService } from '../../clickhouse/clickhouse.service';
 import { RedisKeys, RedisService } from '../../redis';
+import { ActivityRepository } from './activity-repository.service';
 
 /**
  * Servicio para obtener actividad detallada (beats de 15s) desde contractor_activity_15s.
@@ -12,7 +12,7 @@ export class ActivityService {
   private readonly logger = new Logger(ActivityService.name);
 
   constructor(
-    private readonly clickHouseService: ClickHouseService,
+    private readonly activityRepository: ActivityRepository,
     private readonly redisService: RedisService,
   ) {}
 
@@ -42,50 +42,15 @@ export class ActivityService {
     return this.redisService.getOrSet(
       cacheKey,
       async () => {
-        let query = `
-          SELECT 
-            contractor_id,
-            agent_id,
-            session_id,
-            agent_session_id,
-            beat_timestamp,
-            is_idle,
-            keyboard_count,
-            mouse_clicks,
-            workday
-          FROM contractor_activity_15s
-          WHERE contractor_id = '${contractorId}'
-        `;
+        const fromDate = from ? this.formatDateForClickHouse(from) : undefined;
+        const toDate = to ? this.formatDateForClickHouse(to) : undefined;
 
-        if (from) {
-          const fromDate = this.formatDateForClickHouse(from);
-          if (
-            typeof from === 'string' &&
-            (!from.includes('T') || from.includes('T00:00:00'))
-          ) {
-            const dateOnly = fromDate.split(' ')[0];
-            query += ` AND beat_timestamp >= '${dateOnly} 00:00:00'`;
-          } else {
-            query += ` AND beat_timestamp >= '${fromDate}'`;
-          }
-        }
-
-        if (to) {
-          const toDate = this.formatDateForClickHouse(to);
-          if (
-            typeof to === 'string' &&
-            (!to.includes('T') || to.includes('T00:00:00'))
-          ) {
-            const dateOnly = toDate.split(' ')[0];
-            query += ` AND beat_timestamp <= '${dateOnly} 23:59:59'`;
-          } else {
-            query += ` AND beat_timestamp <= '${toDate}'`;
-          }
-        }
-
-        query += ` ORDER BY beat_timestamp DESC LIMIT ${limit}`;
-
-        return await this.clickHouseService.query(query);
+        return this.activityRepository.getBeatsForContractor(
+          contractorId,
+          fromDate,
+          toDate,
+          limit,
+        );
       },
       envs.redis.ttl,
     );

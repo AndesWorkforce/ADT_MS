@@ -17,6 +17,34 @@ export class UsageDataService {
   constructor(private readonly clickHouseService: ClickHouseService) {}
 
   /**
+   * Agrega segundos desde un campo JSON (AppUsage o browser) sobre una colección de eventos.
+   * Cada evento debe tener una propiedad con JSON serializado (por ejemplo app_usage_json, browser_json).
+   */
+  private aggregateUsageFromEvents(
+    events: any[],
+    jsonProperty: string,
+  ): Record<string, number> {
+    const usageMap: Record<string, number> = {};
+
+    for (const event of events) {
+      try {
+        const rawJson = event[jsonProperty] || '{}';
+        const obj = JSON.parse(rawJson);
+        for (const [key, seconds] of Object.entries(obj)) {
+          if (typeof seconds === 'number') {
+            const safe = seconds < 0 ? 0 : seconds;
+            usageMap[key] = (usageMap[key] || 0) + safe;
+          }
+        }
+      } catch {
+        // Ignorar errores de parsing
+      }
+    }
+
+    return usageMap;
+  }
+
+  /**
    * Obtiene los tipos de aplicaciones desde apps_dimension.
    * Método público reutilizable para evitar duplicación de código.
    *
@@ -88,22 +116,10 @@ export class UsageDataService {
       `;
 
       const events = await this.clickHouseService.query<any>(query);
-
-      const appUsageMap: Record<string, number> = {};
-
-      for (const event of events) {
-        try {
-          const appUsageObj = JSON.parse(event.app_usage_json || '{}');
-          for (const [appName, seconds] of Object.entries(appUsageObj)) {
-            if (typeof seconds === 'number') {
-              const safe = seconds < 0 ? 0 : seconds;
-              appUsageMap[appName] = (appUsageMap[appName] || 0) + safe;
-            }
-          }
-        } catch {
-          // Ignorar errores de parsing
-        }
-      }
+      const appUsageMap = this.aggregateUsageFromEvents(
+        events,
+        'app_usage_json',
+      );
 
       // Obtener tipos desde apps_dimension
       const appNames = Object.keys(appUsageMap);
@@ -154,22 +170,10 @@ export class UsageDataService {
       `;
 
       const events = await this.clickHouseService.query<any>(query);
-
-      const browserUsageMap: Record<string, number> = {};
-
-      for (const event of events) {
-        try {
-          const browserObj = JSON.parse(event.browser_json || '{}');
-          for (const [domain, seconds] of Object.entries(browserObj)) {
-            if (typeof seconds === 'number') {
-              const safe = seconds < 0 ? 0 : seconds;
-              browserUsageMap[domain] = (browserUsageMap[domain] || 0) + safe;
-            }
-          }
-        } catch {
-          // Ignorar errores de parsing
-        }
-      }
+      const browserUsageMap = this.aggregateUsageFromEvents(
+        events,
+        'browser_json',
+      );
 
       return Object.entries(browserUsageMap)
         .map(([domain, seconds]) => ({
@@ -230,22 +234,10 @@ export class UsageDataService {
       `;
 
       const events = await this.clickHouseService.query<any>(query);
-
-      const appUsageMap: Record<string, number> = {};
-
-      for (const event of events) {
-        try {
-          const appUsageObj = JSON.parse(event.app_usage_json || '{}');
-          for (const [appName, seconds] of Object.entries(appUsageObj)) {
-            if (typeof seconds === 'number') {
-              const safe = seconds < 0 ? 0 : seconds;
-              appUsageMap[appName] = (appUsageMap[appName] || 0) + safe;
-            }
-          }
-        } catch {
-          // Ignorar errores de parsing
-        }
-      }
+      const appUsageMap = this.aggregateUsageFromEvents(
+        events,
+        'app_usage_json',
+      );
 
       // Obtener tipos desde apps_dimension
       const appNames = Object.keys(appUsageMap);
@@ -311,22 +303,10 @@ export class UsageDataService {
       `;
 
       const events = await this.clickHouseService.query<any>(query);
-
-      const browserUsageMap: Record<string, number> = {};
-
-      for (const event of events) {
-        try {
-          const browserObj = JSON.parse(event.browser_json || '{}');
-          for (const [domain, seconds] of Object.entries(browserObj)) {
-            if (typeof seconds === 'number') {
-              const safe = seconds < 0 ? 0 : seconds;
-              browserUsageMap[domain] = (browserUsageMap[domain] || 0) + safe;
-            }
-          }
-        } catch {
-          // Ignorar errores de parsing
-        }
-      }
+      const browserUsageMap = this.aggregateUsageFromEvents(
+        events,
+        'browser_json',
+      );
 
       return Object.entries(browserUsageMap)
         .map(([domain, seconds]) => ({
