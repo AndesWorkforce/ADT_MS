@@ -52,7 +52,7 @@ USER node
 # Build-time arguments — passed from docker-compose build.args (sourced from .env)
 ARG PORT=3004
 ARG NODE_ENV=production
-ARG ENVIRONMENT=development
+ARG ENVIRONMENT=production
 ARG DEV_LOGS=false
 ARG DATABASE_URL
 ARG NATS_HOST

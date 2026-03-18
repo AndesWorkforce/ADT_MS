@@ -38,7 +38,7 @@ services:
       args:
         PORT: ${PORT:-3005}
         NODE_ENV: production
-        ENVIRONMENT: ${ENVIRONMENT:-development}
+        ENVIRONMENT: ${ENVIRONMENT}
         DEV_LOGS: ${DEV_LOGS:-false}
         DATABASE_URL: ${DATABASE_URL}
         NATS_HOST: ${NATS_HOST}
