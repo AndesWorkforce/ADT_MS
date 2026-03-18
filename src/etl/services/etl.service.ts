@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+﻿import { Injectable, Logger } from '@nestjs/common';
 
 import { ClickHouseService } from '../../clickhouse/clickhouse.service';
 import { ContractorDailyMetricsDto } from '../dto/contractor-daily-metrics.dto';
@@ -366,12 +366,12 @@ export class EtlService {
         });
       } else if (workday) {
         const d = new Date(workday);
-        d.setUTCHours(0, 0, 0, 0);
+        d.setHours(0, 0, 0, 0);
         const dayStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
         days.push(dayStr);
       } else {
         const d = new Date();
-        d.setUTCHours(0, 0, 0, 0);
+        d.setHours(0, 0, 0, 0);
         const dayStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
         days.push(dayStr);
       }
@@ -627,7 +627,7 @@ export class EtlService {
       // Normalizar workday a yyyy-MM-dd si viene informado
       if (workday) {
         const d = new Date(workday);
-        d.setUTCHours(0, 0, 0, 0);
+        d.setHours(0, 0, 0, 0);
         workdayStr = `${d.getUTCFullYear()}-${String(
           d.getUTCMonth() + 1,
         ).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
@@ -914,7 +914,7 @@ export class EtlService {
   ): Promise<void> {
     const now = new Date();
     const todayStart = new Date(now);
-    todayStart.setUTCHours(0, 0, 0, 0);
+    todayStart.setHours(0, 0, 0, 0);
     const todayEnd = new Date(now);
 
     this.logger.log(

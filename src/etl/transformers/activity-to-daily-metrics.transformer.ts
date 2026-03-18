@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+﻿import { Injectable, Logger } from '@nestjs/common';
 
 import { ContractorActivity15sDto } from '../dto/contractor-activity-15s.dto';
 import { ContractorDailyMetricsDto } from '../dto/contractor-daily-metrics.dto';
@@ -90,7 +90,7 @@ export class ActivityToDailyMetricsTransformer {
       const sApps = this.calculateAppsScore(appUsage || []);
       const sBrowser = this.calculateBrowserScore(browserUsage || []);
       this.logger.debug(
-        `DailyMetrics agg ${dto.contractor_id} ${dto.workday.toISOString().split('T')[0]} ` +
+        `DailyMetrics agg ${dto.contractor_id} ${dto.workday.toLocaleDateString('en-CA')} ` +
           `S_active=${sActive.toFixed(2)} S_inputs=${sInputs.toFixed(2)} ` +
           `S_apps=${sApps.toFixed(2)} S_browser=${sBrowser.toFixed(2)} ` +
           `score=${dto.productivity_score.toFixed(2)}`,

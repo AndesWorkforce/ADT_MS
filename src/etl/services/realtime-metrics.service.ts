@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+﻿import { Injectable, Logger } from '@nestjs/common';
 
 import { envs } from 'config';
 import { ClickHouseService } from '../../clickhouse/clickhouse.service';
@@ -35,8 +35,8 @@ export class RealtimeMetricsService {
   async getRealtimeMetrics(contractorId: string, workday?: Date) {
     // Crear una copia del Date para no modificar el original
     const workdayDate = workday ? new Date(workday) : new Date();
-    workdayDate.setUTCHours(0, 0, 0, 0); // Usar UTC para evitar problemas de zona horaria
-    const workdayStr = workdayDate.toISOString().split('T')[0];
+    workdayDate.setHours(0, 0, 0, 0); // Usar medianoche en zona horaria local del servidor (America/New_York)
+    const workdayStr = workdayDate.toLocaleDateString('en-CA'); // YYYY-MM-DD en zona local
 
     const cacheKey = RedisKeys.realTimeMetricsByContractor(
       contractorId,
@@ -122,7 +122,7 @@ export class RealtimeMetricsService {
     contractorId: string,
     workday: Date,
   ): Promise<any> {
-    const workdayStr = workday.toISOString().split('T')[0];
+    const workdayStr = workday.toLocaleDateString('en-CA');
 
     // Leer beats del día desde el repositorio
     const beats = await this.activityRepository.getBeatsForWorkday(
@@ -257,8 +257,8 @@ export class RealtimeMetricsService {
     >;
   }> {
     const workdayDate = workday ? new Date(workday) : new Date();
-    workdayDate.setUTCHours(0, 0, 0, 0);
-    const workdayStr = workdayDate.toISOString().split('T')[0];
+    workdayDate.setHours(0, 0, 0, 0);
+    const workdayStr = workdayDate.toLocaleDateString('en-CA');
 
     const cacheKey = RedisKeys.productivityByAgent(contractorId, workdayStr);
 
@@ -384,7 +384,7 @@ export class RealtimeMetricsService {
       return new Map();
     }
 
-    const workdayStr = workday.toISOString().split('T')[0];
+    const workdayStr = workday.toLocaleDateString('en-CA');
     const agentIdsList = agentIds.map((id) => `'${id}'`).join(',');
 
     const query = `
@@ -441,7 +441,7 @@ export class RealtimeMetricsService {
       return new Map();
     }
 
-    const workdayStr = workday.toISOString().split('T')[0];
+    const workdayStr = workday.toLocaleDateString('en-CA');
     const agentIdsList = agentIds.map((id) => `'${id}'`).join(',');
 
     const query = `
@@ -493,8 +493,8 @@ export class RealtimeMetricsService {
       return new Map();
     }
 
-    const fromStr = fromDate.toISOString().split('T')[0];
-    const toStr = toDate.toISOString().split('T')[0];
+    const fromStr = fromDate.toLocaleDateString('en-CA');
+    const toStr = toDate.toLocaleDateString('en-CA');
     const agentIdsList = agentIds.map((id) => `'${id}'`).join(',');
 
     const query = `
@@ -553,8 +553,8 @@ export class RealtimeMetricsService {
       return new Map();
     }
 
-    const fromStr = fromDate.toISOString().split('T')[0];
-    const toStr = toDate.toISOString().split('T')[0];
+    const fromStr = fromDate.toLocaleDateString('en-CA');
+    const toStr = toDate.toLocaleDateString('en-CA');
     const agentIdsList = agentIds.map((id) => `'${id}'`).join(',');
 
     const query = `
@@ -635,12 +635,12 @@ export class RealtimeMetricsService {
     >;
   }> {
     const from = new Date(fromDate);
-    from.setUTCHours(0, 0, 0, 0);
+    from.setHours(0, 0, 0, 0);
     const to = new Date(toDate);
-    to.setUTCHours(23, 59, 59, 999);
+    to.setHours(23, 59, 59, 999);
 
-    const fromStr = from.toISOString().split('T')[0];
-    const toStr = to.toISOString().split('T')[0];
+    const fromStr = from.toLocaleDateString('en-CA');
+    const toStr = to.toLocaleDateString('en-CA');
 
     const cacheKey = RedisKeys.productivityByAgentRange(
       contractorId,
@@ -781,12 +781,12 @@ export class RealtimeMetricsService {
     toDate: Date,
   ): Promise<any> {
     const from = new Date(fromDate);
-    from.setUTCHours(0, 0, 0, 0);
+    from.setHours(0, 0, 0, 0);
     const to = new Date(toDate);
-    to.setUTCHours(23, 59, 59, 999);
+    to.setHours(23, 59, 59, 999);
 
-    const fromStr = from.toISOString().split('T')[0];
-    const toStr = to.toISOString().split('T')[0];
+    const fromStr = from.toLocaleDateString('en-CA');
+    const toStr = to.toLocaleDateString('en-CA');
 
     // Leer beats consolidados por timestamp (multi-agente) en el rango
     const beatsQuery = `
@@ -915,7 +915,7 @@ export class RealtimeMetricsService {
       }
     >
   > {
-    const workdayStr = workday.toISOString().split('T')[0];
+    const workdayStr = workday.toLocaleDateString('en-CA');
     const filterClause =
       contractorIds !== null && contractorIds.length > 0
         ? `AND contractor_id IN (${contractorIds.map((id) => `'${id}'`).join(',')})`
@@ -1035,8 +1035,8 @@ export class RealtimeMetricsService {
     },
   ): Promise<any[]> {
     const workdayDate = workday ? new Date(workday) : new Date();
-    workdayDate.setUTCHours(0, 0, 0, 0);
-    const workdayStr = workdayDate.toISOString().split('T')[0];
+    workdayDate.setHours(0, 0, 0, 0);
+    const workdayStr = workdayDate.toLocaleDateString('en-CA');
 
     const cacheKey = RedisKeys.allRealTimeMetricsByWorkday(workdayStr, filters);
 
@@ -1159,12 +1159,12 @@ export class RealtimeMetricsService {
     },
   ): Promise<any[]> {
     const from = new Date(fromDate);
-    from.setUTCHours(0, 0, 0, 0);
+    from.setHours(0, 0, 0, 0);
     const to = new Date(toDate);
-    to.setUTCHours(23, 59, 59, 999);
+    to.setHours(23, 59, 59, 999);
 
-    const fromStr = from.toISOString().split('T')[0];
-    const toStr = to.toISOString().split('T')[0];
+    const fromStr = from.toLocaleDateString('en-CA');
+    const toStr = to.toLocaleDateString('en-CA');
     const cacheKey = RedisKeys.allRealTimeMetricsByDateRange(
       fromStr,
       toStr,
@@ -1276,7 +1276,7 @@ export class RealtimeMetricsService {
     );
     const fromDate = new Date(fromStr);
     const toDate = new Date(toStr);
-    toDate.setUTCHours(23, 59, 59, 999);
+    toDate.setHours(23, 59, 59, 999);
 
     const resultContractorIds = results.map((r) => r.contractor_id);
 
@@ -1402,12 +1402,12 @@ export class RealtimeMetricsService {
     toDate: Date,
   ): Promise<any> {
     const from = new Date(fromDate);
-    from.setUTCHours(0, 0, 0, 0);
+    from.setHours(0, 0, 0, 0);
     const to = new Date(toDate);
-    to.setUTCHours(23, 59, 59, 999);
+    to.setHours(23, 59, 59, 999);
 
-    const fromStr = from.toISOString().split('T')[0];
-    const toStr = to.toISOString().split('T')[0];
+    const fromStr = from.toLocaleDateString('en-CA');
+    const toStr = to.toLocaleDateString('en-CA');
     const cacheKey = RedisKeys.realTimeMetricsByContractorRange(
       contractorId,
       fromStr,
@@ -1442,8 +1442,8 @@ export class RealtimeMetricsService {
     fromDate: Date,
     toDate: Date,
   ): Promise<any> {
-    const fromStr = fromDate.toISOString().split('T')[0];
-    const toStr = toDate.toISOString().split('T')[0];
+    const fromStr = fromDate.toLocaleDateString('en-CA');
+    const toStr = toDate.toLocaleDateString('en-CA');
 
     const query = `
       SELECT 
@@ -1701,17 +1701,17 @@ export class RealtimeMetricsService {
           allMetrics = await this.getAllRealtimeMetrics(today, undefined);
         } else {
           const today = new Date();
-          today.setUTCHours(23, 59, 59, 999);
+          today.setHours(23, 59, 59, 999);
           let fromDate: Date;
 
           if (period === 'week') {
             fromDate = new Date(today);
             fromDate.setUTCDate(fromDate.getUTCDate() - 6);
-            fromDate.setUTCHours(0, 0, 0, 0);
+            fromDate.setHours(0, 0, 0, 0);
           } else {
             fromDate = new Date(today);
             fromDate.setUTCDate(1);
-            fromDate.setUTCHours(0, 0, 0, 0);
+            fromDate.setHours(0, 0, 0, 0);
           }
 
           allMetrics = await this.getAllRealtimeMetricsByDateRange(
@@ -1784,29 +1784,29 @@ export class RealtimeMetricsService {
         const dbName = envs.clickhouse.database;
 
         const today = new Date();
-        today.setUTCHours(23, 59, 59, 999);
+        today.setHours(23, 59, 59, 999);
         let fromDate: Date;
         let periodStr: string;
 
         if (period === 'day') {
           fromDate = new Date(today);
-          fromDate.setUTCHours(0, 0, 0, 0);
-          periodStr = fromDate.toISOString().split('T')[0];
+          fromDate.setHours(0, 0, 0, 0);
+          periodStr = fromDate.toLocaleDateString('en-CA');
         } else if (period === 'week') {
           fromDate = new Date(today);
           fromDate.setUTCDate(fromDate.getUTCDate() - 6); // 7 días incluyendo hoy
-          fromDate.setUTCHours(0, 0, 0, 0);
-          periodStr = `${fromDate.toISOString().split('T')[0]} to ${today.toISOString().split('T')[0]}`;
+          fromDate.setHours(0, 0, 0, 0);
+          periodStr = `${fromDate.toLocaleDateString('en-CA')} to ${today.toLocaleDateString('en-CA')}`;
         } else {
           // month
           fromDate = new Date(today);
           fromDate.setUTCDate(1);
-          fromDate.setUTCHours(0, 0, 0, 0);
-          periodStr = `${fromDate.toISOString().split('T')[0]} to ${today.toISOString().split('T')[0]}`;
+          fromDate.setHours(0, 0, 0, 0);
+          periodStr = `${fromDate.toLocaleDateString('en-CA')} to ${today.toLocaleDateString('en-CA')}`;
         }
 
-        const fromStr = fromDate.toISOString().split('T')[0];
-        const toStr = today.toISOString().split('T')[0];
+        const fromStr = fromDate.toLocaleDateString('en-CA');
+        const toStr = today.toLocaleDateString('en-CA');
 
         try {
           const totalContractorsQuery = `
