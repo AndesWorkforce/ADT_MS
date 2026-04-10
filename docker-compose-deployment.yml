@@ -1,0 +1,94 @@
+# docker-compose-deployment.yml — Desarrollo local (NATS + build de adt-ms)
+#
+# Producción Swarm / Portainer: usar docker-compose.yml
+#
+# Usage:
+#   1. Copy .env.example to .env and fill in your values
+#   2. docker compose -f docker-compose-deployment.yml up --build
+
+services:
+  # ─── NATS message broker ────────────────────────────────────────────────────
+  nats:
+    image: nats:2.10-alpine
+    container_name: andes-adt-nats
+    restart: unless-stopped
+    command:
+      - '--user'
+      - '${NATS_USERNAME}'
+      - '--pass'
+      - '${NATS_PASSWORD}'
+      - '--port'
+      - '4222'
+      - '-m'
+      - '8222' # enable HTTP monitoring endpoint
+    ports:
+      - '4222:4222' # client connections
+      - '8222:8222' # HTTP monitoring (optional)
+    healthcheck:
+      test: ['CMD', 'wget', '--spider', '-q', 'http://localhost:8222/healthz']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── ADT Microservice ──────────────────────────────────────────────────────
+  adt-ms:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+      args:
+        PORT: ${PORT:-3005}
+        NODE_ENV: production
+        ENVIRONMENT: ${ENVIRONMENT}
+        DEV_LOGS: ${DEV_LOGS:-false}
+        DATABASE_URL: ${DATABASE_URL}
+        NATS_HOST: ${NATS_HOST}
+        NATS_PORT: ${NATS_PORT:-4222}
+        NATS_USERNAME: ${NATS_USERNAME}
+        NATS_PASSWORD: ${NATS_PASSWORD}
+        CLICKHOUSE_HOST: ${CLICKHOUSE_HOST}
+        CLICKHOUSE_PORT: ${CLICKHOUSE_PORT:-8123}
+        CLICKHOUSE_USERNAME: ${CLICKHOUSE_USERNAME}
+        CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+        CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-andes_db}
+        REDIS_HOST: ${REDIS_HOST}
+        REDIS_PORT: ${REDIS_PORT:-9002}
+        REDIS_PASSWORD: ${REDIS_PASSWORD}
+        REDIS_DB: ${REDIS_DB:-0}
+        REDIS_TTL: ${REDIS_TTL:-600}
+        REDIS_MAX_RETRIES: ${REDIS_MAX_RETRIES:-3}
+        REDIS_RETRY_DELAY: ${REDIS_RETRY_DELAY:-1000}
+        REDIS_QUEUE_DB: ${REDIS_QUEUE_DB:-1}
+        USE_EVENT_QUEUE: ${USE_EVENT_QUEUE:-true}
+        USE_SESSION_QUEUE: ${USE_SESSION_QUEUE:-true}
+        USE_CONTRACTOR_QUEUE: ${USE_CONTRACTOR_QUEUE:-true}
+        USE_ETL_QUEUE: ${USE_ETL_QUEUE:-true}
+        QUEUE_CONCURRENCY_EVENTS: ${QUEUE_CONCURRENCY_EVENTS:-5}
+        QUEUE_CONCURRENCY_SESSIONS: ${QUEUE_CONCURRENCY_SESSIONS:-3}
+        QUEUE_CONCURRENCY_CONTRACTORS: ${QUEUE_CONCURRENCY_CONTRACTORS:-2}
+        QUEUE_CONCURRENCY_ETL: ${QUEUE_CONCURRENCY_ETL:-1}
+        QUEUE_RETRY_ATTEMPTS: ${QUEUE_RETRY_ATTEMPTS:-3}
+        QUEUE_RETRY_BACKOFF_TYPE: ${QUEUE_RETRY_BACKOFF_TYPE:-exponential}
+        QUEUE_RETRY_BACKOFF_DELAY: ${QUEUE_RETRY_BACKOFF_DELAY:-5000}
+        USE_INACTIVITY_ALERTS: ${USE_INACTIVITY_ALERTS:-true}
+        INACTIVITY_THRESHOLD_MINUTES: ${INACTIVITY_THRESHOLD_MINUTES:-60}
+        INACTIVITY_SCAN_INTERVAL_MINUTES: ${INACTIVITY_SCAN_INTERVAL_MINUTES:-10}
+    container_name: andes-adt-ms
+    restart: unless-stopped
+    environment:
+      TZ: America/New_York
+    ports:
+      - '${PORT:-3005}:${PORT:-3005}'
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'wget',
+          '--spider',
+          '-q',
+          'http://localhost:${PORT:-3005}/health',
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
