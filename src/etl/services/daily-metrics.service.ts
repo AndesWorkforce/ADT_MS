@@ -1,6 +1,6 @@
 ﻿import { Injectable, Logger } from '@nestjs/common';
 
-import { envs } from 'config';
+import { envs, formatDateInTZ } from 'config';
 import { ClickHouseService } from '../../clickhouse/clickhouse.service';
 import { RedisKeys, RedisService } from '../../redis';
 
@@ -103,7 +103,7 @@ export class DailyMetricsService {
           typeof row.workday === 'string'
             ? row.workday.split('T')[0]
             : row.workday instanceof Date
-              ? row.workday.toLocaleDateString('en-CA')
+              ? formatDateInTZ(row.workday)
               : row.workday,
         app_usage: appUsage,
         browser_usage: browserUsage,

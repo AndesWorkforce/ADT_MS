@@ -1,5 +1,6 @@
 ﻿import { Injectable, Logger } from '@nestjs/common';
 
+import { formatDateInTZ } from 'config';
 import { ClickHouseService } from '../../clickhouse/clickhouse.service';
 import { ContractorDailyMetricsDto } from '../dto/contractor-daily-metrics.dto';
 import { SessionSummaryDto } from '../dto/session-summary.dto';
@@ -47,9 +48,7 @@ export class EtlService {
       // 1) Procesar por día, solo si el día NO existe en destino (idempotencia sin DELETE)
 
       await this.iterateDays(from, to, async (day) => {
-        const dayStr = `${day.getUTCFullYear()}-${String(
-          day.getUTCMonth() + 1,
-        ).padStart(2, '0')}-${String(day.getUTCDate()).padStart(2, '0')}`;
+        const dayStr = formatDateInTZ(day);
 
         // Verificar existencia en destino (por contratista si se especifica)
         const contractorFilter = contractorId
@@ -87,7 +86,7 @@ export class EtlService {
         }>(`
           SELECT count() AS cnt
           FROM events_raw
-          WHERE toDate(timestamp) = toDate('${dayStr}')
+          WHERE toDate(timestamp, 'America/New_York') = toDate('${dayStr}')
           ${eventsFilter}
         `);
         const estimatedInserted = Number(insertedRes[0]?.cnt || 0);
@@ -203,9 +202,7 @@ export class EtlService {
    * Construye la query de INSERT SELECT para un día concreto de contractor_activity_15s.
    */
   private buildInsertActivityQuery(day: Date, contractorId?: string): string {
-    const dayStr = `${day.getUTCFullYear()}-${String(
-      day.getUTCMonth() + 1,
-    ).padStart(2, '0')}-${String(day.getUTCDate()).padStart(2, '0')}`;
+    const dayStr = formatDateInTZ(day);
 
     const eventsFilter = contractorId
       ? ` AND contractor_id = '${contractorId}'`
@@ -226,10 +223,10 @@ export class EtlService {
         ) AS is_idle,
         toUInt32OrZero(JSON_VALUE(payload, '$.Keyboard.InputsCount')) AS keyboard_count,
         toUInt32OrZero(JSON_VALUE(payload, '$.Mouse.ClicksCount')) AS mouse_clicks,
-        toDate(timestamp) AS workday,
+        toDate(timestamp, 'America/New_York') AS workday,
         now() AS created_at
       FROM events_raw
-      WHERE toDate(timestamp) = toDate('${dayStr}')
+      WHERE toDate(timestamp, 'America/New_York') = toDate('${dayStr}')
       ${eventsFilter}
     `;
   }
@@ -292,7 +289,7 @@ export class EtlService {
           ) AS is_idle,
           toUInt32OrZero(JSON_VALUE(payload, '$.Keyboard.InputsCount')) AS keyboard_count,
           toUInt32OrZero(JSON_VALUE(payload, '$.Mouse.ClicksCount')) AS mouse_clicks,
-          toDate(timestamp) AS workday,
+          toDate(timestamp, 'America/New_York') AS workday,
           now() AS created_at
         FROM events_raw
         WHERE 1=1
@@ -360,21 +357,12 @@ export class EtlService {
       if (fromDate || toDate) {
         const { from, to } = this.normalizeDateRange(fromDate, toDate, 0, true);
         await this.iterateDays(from, to, async (d) => {
-          const dayStr = `${d.getUTCFullYear()}-${String(
-            d.getUTCMonth() + 1,
-          ).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
-          days.push(dayStr);
+          days.push(formatDateInTZ(d));
         });
       } else if (workday) {
-        const d = new Date(workday);
-        d.setHours(0, 0, 0, 0);
-        const dayStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
-        days.push(dayStr);
+        days.push(formatDateInTZ(new Date(workday)));
       } else {
-        const d = new Date();
-        d.setHours(0, 0, 0, 0);
-        const dayStr = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
-        days.push(dayStr);
+        days.push(formatDateInTZ(new Date()));
       }
 
       const contractorFilter = contractorIds?.length
@@ -494,13 +482,13 @@ export class EtlService {
         LEFT JOIN (
           SELECT 
             contractor_id,
-            toDate(timestamp) AS workday,
+            toDate(timestamp, 'America/New_York') AS workday,
             sum(JSONExtractFloat(payload, 'AppUsage', app) * ifNull(d.weight, 0.5)) AS weighted_seconds,
             sum(JSONExtractFloat(payload, 'AppUsage', app)) AS total_seconds
           FROM events_raw
           ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app
           LEFT JOIN apps_dimension d ON d.name = app
-          WHERE toDate(timestamp) = toDate('${dayStr}')
+          WHERE toDate(timestamp, 'America/New_York') = toDate('${dayStr}')
           ${contractorFilter}
           GROUP BY contractor_id, workday
         ) app ON app.contractor_id = ca.contractor_id AND app.workday = ca.workday
@@ -513,12 +501,12 @@ export class EtlService {
           FROM (
             SELECT
               contractor_id,
-              toDate(timestamp) AS workday,
+              toDate(timestamp, 'America/New_York') AS workday,
               app,
               sum(JSONExtractFloat(payload, 'AppUsage', app)) AS sec
             FROM events_raw
             ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app
-            WHERE toDate(timestamp) = toDate('${dayStr}')
+            WHERE toDate(timestamp, 'America/New_York') = toDate('${dayStr}')
             ${contractorFilter}
             GROUP BY contractor_id, workday, app
           )
@@ -528,7 +516,7 @@ export class EtlService {
         LEFT JOIN (
           SELECT 
             contractor_id,
-            toDate(timestamp) AS workday,
+            toDate(timestamp, 'America/New_York') AS workday,
             sum(
               JSONExtractFloat(payload, 'browser', dc) *
               ifNull(d.weight, 1)
@@ -537,7 +525,7 @@ export class EtlService {
           FROM events_raw
           ARRAY JOIN JSONExtractKeys(payload, 'browser') AS dc
           LEFT JOIN domains_dimension d ON d.domain = dc
-          WHERE toDate(timestamp) = toDate('${dayStr}')
+          WHERE toDate(timestamp, 'America/New_York') = toDate('${dayStr}')
           ${contractorFilter}
           GROUP BY contractor_id, workday
         ) web ON web.contractor_id = ca.contractor_id AND web.workday = ca.workday
@@ -550,12 +538,12 @@ export class EtlService {
           FROM (
             SELECT
               contractor_id,
-              toDate(timestamp) AS workday,
+              toDate(timestamp, 'America/New_York') AS workday,
               dc,
               sum(JSONExtractFloat(payload, 'browser', dc)) AS sec
             FROM events_raw
             ARRAY JOIN JSONExtractKeys(payload, 'browser') AS dc
-            WHERE toDate(timestamp) = toDate('${dayStr}')
+            WHERE toDate(timestamp, 'America/New_York') = toDate('${dayStr}')
             ${contractorFilter}
             GROUP BY contractor_id, workday, dc
           )
@@ -627,11 +615,7 @@ export class EtlService {
 
       // Normalizar workday a yyyy-MM-dd si viene informado
       if (workday) {
-        const d = new Date(workday);
-        d.setHours(0, 0, 0, 0);
-        workdayStr = `${d.getUTCFullYear()}-${String(
-          d.getUTCMonth() + 1,
-        ).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+        workdayStr = formatDateInTZ(new Date(workday));
       }
 
       // 1) Borrado previo según el modo
@@ -667,7 +651,7 @@ export class EtlService {
       } else if (contractorId && workdayStr) {
         sessionFilter = `
           WHERE a.contractor_id = '${contractorId}'
-            AND toDate(a.beat_timestamp) = toDate('${workdayStr}')
+            AND toDate(a.beat_timestamp, 'America/New_York') = toDate('${workdayStr}')
         `;
       } else {
         sessionFilter = `
@@ -793,8 +777,8 @@ export class EtlService {
     toDate: Date,
   ): Promise<number> {
     try {
-      const fromStr = fromDate.toISOString().split('T')[0];
-      const toStr = toDate.toISOString().split('T')[0];
+      const fromStr = formatDateInTZ(fromDate);
+      const toStr = formatDateInTZ(toDate);
 
       this.logger.log(
         `🔄 Reprocessing session_summary for date range ${fromStr} to ${toStr} (ALL contractors)`,
@@ -870,8 +854,8 @@ export class EtlService {
           GROUP BY e.session_id, e.agent_id
         ) web ON web.session_id = a.session_id AND coalesce(web.agent_id, '') = coalesce(a.agent_id, '')
         WHERE a.session_id IS NOT NULL
-          AND toDate(a.beat_timestamp) >= toDate('${fromStr}')
-          AND toDate(a.beat_timestamp) <= toDate('${toStr}')
+          AND toDate(a.beat_timestamp, 'America/New_York') >= toDate('${fromStr}')
+          AND toDate(a.beat_timestamp, 'America/New_York') <= toDate('${toStr}')
         GROUP BY a.session_id, a.agent_id
         SETTINGS max_partitions_per_insert_block=1000
       `;
@@ -914,12 +898,12 @@ export class EtlService {
     sessionId: string,
   ): Promise<void> {
     const now = new Date();
-    const todayStart = new Date(now);
-    todayStart.setHours(0, 0, 0, 0);
+    const todayStr = formatDateInTZ(now);
+    const todayStart = new Date(`${todayStr}T00:00:00`);
     const todayEnd = new Date(now);
 
     this.logger.log(
-      `🔄 [Orchestrator] Starting full ETL for contractor=${contractorId} session=${sessionId} (today: ${todayStart.toISOString().slice(0, 10)})`,
+      `🔄 [Orchestrator] Starting full ETL for contractor=${contractorId} session=${sessionId} (today: ${todayStr})`,
     );
 
     // 1) process-events para hoy (recalcular rango del día para este contractor)
@@ -958,7 +942,7 @@ export class EtlService {
         FROM events_raw
         ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') as app_name
         WHERE contractor_id = '${contractorId}'
-          AND toDate(timestamp) = '${workdayStr}'
+          AND toDate(timestamp, 'America/New_York') = '${workdayStr}'
           AND JSONHas(payload, 'AppUsage')
         GROUP BY app_name
         HAVING seconds > 0
@@ -997,7 +981,7 @@ export class EtlService {
         FROM events_raw
         ARRAY JOIN JSONExtractKeys(payload, 'browser') as domain
         WHERE contractor_id = '${contractorId}'
-          AND toDate(timestamp) = '${workdayStr}'
+          AND toDate(timestamp, 'America/New_York') = '${workdayStr}'
           AND JSONHas(payload, 'browser')
         GROUP BY domain
         HAVING seconds > 0
@@ -1108,12 +1092,6 @@ export class EtlService {
    * Formatea una fecha al formato DateTime de ClickHouse.
    */
   private formatDate(date: Date): string {
-    const year = date.getUTCFullYear();
-    const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-    const day = String(date.getUTCDate()).padStart(2, '0');
-    const hours = String(date.getUTCHours()).padStart(2, '0');
-    const minutes = String(date.getUTCMinutes()).padStart(2, '0');
-    const seconds = String(date.getUTCSeconds()).padStart(2, '0');
-    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+    return date.toISOString().replace('T', ' ').slice(0, 19);
   }
 }

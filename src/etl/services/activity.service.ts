@@ -73,13 +73,6 @@ export class ActivityService {
       throw new Error(`Invalid date: ${date}`);
     }
 
-    const year = dateObj.getUTCFullYear();
-    const month = String(dateObj.getUTCMonth() + 1).padStart(2, '0');
-    const day = String(dateObj.getUTCDate()).padStart(2, '0');
-    const hours = String(dateObj.getUTCHours()).padStart(2, '0');
-    const minutes = String(dateObj.getUTCMinutes()).padStart(2, '0');
-    const seconds = String(dateObj.getUTCSeconds()).padStart(2, '0');
-
-    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+    return dateObj.toISOString().replace('T', ' ').slice(0, 19);
   }
 }

@@ -3,6 +3,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 
 import { QUEUE_NAMES, DEFAULT_JOB_OPTIONS } from 'config/bullmq.config';
+import { formatDateInTZ } from 'config';
 
 import { EtlJobData, JobType, JobPriority } from '../types';
 
@@ -50,9 +51,7 @@ export class EtlQueueService {
   ): Promise<string> {
     try {
       const effectiveWorkday = workday || new Date();
-      effectiveWorkday.setHours(0, 0, 0, 0);
-
-      const dayStr = effectiveWorkday.toISOString().slice(0, 10); // YYYY-MM-DD
+      const dayStr = formatDateInTZ(effectiveWorkday);
 
       // JobId incluye timestamp para evitar reutilizar jobs fallidos
       const contractorSuffix = contractorIds?.length

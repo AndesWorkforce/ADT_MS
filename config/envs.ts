@@ -109,6 +109,13 @@ if (error) {
 
 const envVars: EnvVars = value;
 
+/**
+ * Zona horaria operativa para interpretar workdays, agrupar métricas por día
+ * y generar strings YYYY-MM-DD coherentes con el calendario del cliente.
+ */
+export const OPERATIONAL_TIMEZONE =
+  process.env.EVENTS_TIMEZONE || 'America/New_York';
+
 export const envs = {
   port: envVars.PORT,
   natsHost: envVars.NATS_HOST,

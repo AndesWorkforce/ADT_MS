@@ -1,5 +1,6 @@
 ﻿import { Injectable, Logger } from '@nestjs/common';
 
+import { formatDateInTZ } from 'config';
 import { ContractorActivity15sDto } from '../dto/contractor-activity-15s.dto';
 import { ContractorDailyMetricsDto } from '../dto/contractor-daily-metrics.dto';
 import { DimensionsService } from '../services/dimensions.service';
@@ -90,7 +91,7 @@ export class ActivityToDailyMetricsTransformer {
       const sApps = this.calculateAppsScore(appUsage || []);
       const sBrowser = this.calculateBrowserScore(browserUsage || []);
       this.logger.debug(
-        `DailyMetrics agg ${dto.contractor_id} ${dto.workday.toLocaleDateString('en-CA')} ` +
+        `DailyMetrics agg ${dto.contractor_id} ${formatDateInTZ(dto.workday)} ` +
           `S_active=${sActive.toFixed(2)} S_inputs=${sInputs.toFixed(2)} ` +
           `S_apps=${sApps.toFixed(2)} S_browser=${sBrowser.toFixed(2)} ` +
           `score=${dto.productivity_score.toFixed(2)}`,
