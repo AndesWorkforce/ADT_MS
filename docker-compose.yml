@@ -38,6 +38,8 @@ services:
           memory: 256M
     environment:
       NODE_ENV: production
+      TZ: 'America/New_York'
+      EVENTS_TIMEZONE: 'America/New_York'
       PORT: '${PORT:-3005}'
       DATABASE_URL: '${DATABASE_URL}'
       NATS_HOST: '${NATS_HOST:-72.61.129.234}'

@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 
-import { logError } from 'config';
+import { logError, formatDateInTZ } from 'config';
 
 import { ClickHouseService } from '../clickhouse/clickhouse.service';
 import { AgentSessionRawDto } from './dto/agent-session-raw.dto';
@@ -39,11 +39,9 @@ export class RawService {
       // Logs de prueba para MVs: contar antes
       const enableMvLogs = process.env.ETL_DEBUG_LOGS === '1';
       const contractorId = event.contractor_id;
-      const workdayStr = (
-        event.timestamp ? new Date(event.timestamp) : new Date()
-      )
-        .toISOString()
-        .split('T')[0];
+      const workdayStr = formatDateInTZ(
+        event.timestamp ? new Date(event.timestamp) : new Date(),
+      );
 
       let beforeBeats = 0;
 

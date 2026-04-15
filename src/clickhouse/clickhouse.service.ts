@@ -497,7 +497,7 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
           payload String,
           created_at DateTime DEFAULT now()
         ) ENGINE = MergeTree()
-        PARTITION BY toDate(timestamp)
+        PARTITION BY toDate(timestamp, 'America/New_York')
         ORDER BY (contractor_id, timestamp, event_id)
         TTL timestamp + INTERVAL 365 DAY
       `);
@@ -769,7 +769,7 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
           is_idle UInt8,
           keyboard_count UInt32,
           mouse_clicks UInt32,
-          workday Date DEFAULT toDate(beat_timestamp),
+          workday Date DEFAULT toDate(beat_timestamp, 'America/New_York'),
           created_at DateTime DEFAULT now()
         ) ENGINE = MergeTree()
         PARTITION BY workday

@@ -1,5 +1,6 @@
 ﻿import { Injectable, Logger } from '@nestjs/common';
 
+import { formatDateInTZ } from 'config';
 import { ClickHouseService } from '../../clickhouse/clickhouse.service';
 import {
   AppUsageData,
@@ -99,7 +100,7 @@ export class UsageDataService {
     workday: Date,
     agentId?: string,
   ): Promise<AppUsageData[]> {
-    const workdayStr = workday.toLocaleDateString('en-CA');
+    const workdayStr = formatDateInTZ(workday);
     const agentFilter = agentId ? `AND agent_id = '${agentId}'` : '';
 
     try {
@@ -109,7 +110,7 @@ export class UsageDataService {
           timestamp
         FROM events_raw
         WHERE contractor_id = '${contractorId}'
-          AND toDate(timestamp) = '${workdayStr}'
+          AND toDate(timestamp, 'America/New_York') = '${workdayStr}'
           AND JSONHas(payload, 'AppUsage')
           ${agentFilter}
         ORDER BY timestamp
@@ -153,7 +154,7 @@ export class UsageDataService {
     workday: Date,
     agentId?: string,
   ): Promise<BrowserUsageData[]> {
-    const workdayStr = workday.toLocaleDateString('en-CA');
+    const workdayStr = formatDateInTZ(workday);
     const agentFilter = agentId ? `AND agent_id = '${agentId}'` : '';
 
     try {
@@ -163,7 +164,7 @@ export class UsageDataService {
           timestamp
         FROM events_raw
         WHERE contractor_id = '${contractorId}'
-          AND toDate(timestamp) = '${workdayStr}'
+          AND toDate(timestamp, 'America/New_York') = '${workdayStr}'
           AND JSONHas(payload, 'browser')
           ${agentFilter}
         ORDER BY timestamp
@@ -206,8 +207,8 @@ export class UsageDataService {
     limit?: number,
     agentId?: string,
   ): Promise<AppUsageData[]> {
-    const fromStr = fromDate.toLocaleDateString('en-CA');
-    const toStr = toDate.toLocaleDateString('en-CA');
+    const fromStr = formatDateInTZ(fromDate);
+    const toStr = formatDateInTZ(toDate);
 
     // Calcular si usar LIMIT basado en el rango
     const daysDiff =
@@ -225,8 +226,8 @@ export class UsageDataService {
           timestamp
         FROM events_raw
         WHERE contractor_id = '${contractorId}'
-          AND toDate(timestamp) >= '${fromStr}'
-          AND toDate(timestamp) <= '${toStr}'
+          AND toDate(timestamp, 'America/New_York') >= '${fromStr}'
+          AND toDate(timestamp, 'America/New_York') <= '${toStr}'
           AND JSONHas(payload, 'AppUsage')
           ${agentFilter}
         ORDER BY timestamp
@@ -275,8 +276,8 @@ export class UsageDataService {
     limit?: number,
     agentId?: string,
   ): Promise<BrowserUsageData[]> {
-    const fromStr = fromDate.toLocaleDateString('en-CA');
-    const toStr = toDate.toLocaleDateString('en-CA');
+    const fromStr = formatDateInTZ(fromDate);
+    const toStr = formatDateInTZ(toDate);
 
     // Calcular si usar LIMIT basado en el rango
     const daysDiff =
@@ -294,8 +295,8 @@ export class UsageDataService {
           timestamp
         FROM events_raw
         WHERE contractor_id = '${contractorId}'
-          AND toDate(timestamp) >= '${fromStr}'
-          AND toDate(timestamp) <= '${toStr}'
+          AND toDate(timestamp, 'America/New_York') >= '${fromStr}'
+          AND toDate(timestamp, 'America/New_York') <= '${toStr}'
           AND JSONHas(payload, 'browser')
           ${agentFilter}
         ORDER BY timestamp
@@ -336,8 +337,8 @@ export class UsageDataService {
     fromDate: Date,
     toDate: Date,
   ): Promise<AppUsageData[]> {
-    const fromStr = fromDate.toLocaleDateString('en-CA');
-    const toStr = toDate.toLocaleDateString('en-CA');
+    const fromStr = formatDateInTZ(fromDate);
+    const toStr = formatDateInTZ(toDate);
 
     try {
       const query = `
@@ -349,8 +350,8 @@ export class UsageDataService {
         ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app_name
         LEFT JOIN apps_dimension d ON d.name = app_name
         WHERE contractor_id = '${contractorId}'
-          AND toDate(timestamp) >= '${fromStr}'
-          AND toDate(timestamp) <= '${toStr}'
+          AND toDate(timestamp, 'America/New_York') >= '${fromStr}'
+          AND toDate(timestamp, 'America/New_York') <= '${toStr}'
           AND JSONHas(payload, 'AppUsage')
         GROUP BY app_name
         HAVING seconds > 0
@@ -393,8 +394,8 @@ export class UsageDataService {
     fromDate: Date,
     toDate: Date,
   ): Promise<BrowserUsageData[]> {
-    const fromStr = fromDate.toLocaleDateString('en-CA');
-    const toStr = toDate.toLocaleDateString('en-CA');
+    const fromStr = formatDateInTZ(fromDate);
+    const toStr = formatDateInTZ(toDate);
 
     try {
       const query = `
@@ -404,8 +405,8 @@ export class UsageDataService {
         FROM events_raw
         ARRAY JOIN JSONExtractKeys(payload, 'browser') AS domain
         WHERE contractor_id = '${contractorId}'
-          AND toDate(timestamp) >= '${fromStr}'
-          AND toDate(timestamp) <= '${toStr}'
+          AND toDate(timestamp, 'America/New_York') >= '${fromStr}'
+          AND toDate(timestamp, 'America/New_York') <= '${toStr}'
           AND JSONHas(payload, 'browser')
         GROUP BY domain
         HAVING seconds > 0
@@ -450,8 +451,8 @@ export class UsageDataService {
       return new Map();
     }
 
-    const fromStr = fromDate.toLocaleDateString('en-CA');
-    const toStr = toDate.toLocaleDateString('en-CA');
+    const fromStr = formatDateInTZ(fromDate);
+    const toStr = formatDateInTZ(toDate);
     const contractorIdsList = contractorIds.map((id) => `'${id}'`).join(',');
 
     try {
@@ -465,8 +466,8 @@ export class UsageDataService {
         ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app_name
         LEFT JOIN apps_dimension d ON d.name = app_name
         WHERE contractor_id IN (${contractorIdsList})
-          AND toDate(timestamp) >= '${fromStr}'
-          AND toDate(timestamp) <= '${toStr}'
+          AND toDate(timestamp, 'America/New_York') >= '${fromStr}'
+          AND toDate(timestamp, 'America/New_York') <= '${toStr}'
           AND JSONHas(payload, 'AppUsage')
         GROUP BY contractor_id, app_name
         HAVING seconds > 0
@@ -528,8 +529,8 @@ export class UsageDataService {
       return new Map();
     }
 
-    const fromStr = fromDate.toLocaleDateString('en-CA');
-    const toStr = toDate.toLocaleDateString('en-CA');
+    const fromStr = formatDateInTZ(fromDate);
+    const toStr = formatDateInTZ(toDate);
     const contractorIdsList = contractorIds.map((id) => `'${id}'`).join(',');
 
     try {
@@ -541,8 +542,8 @@ export class UsageDataService {
         FROM events_raw
         ARRAY JOIN JSONExtractKeys(payload, 'browser') AS domain
         WHERE contractor_id IN (${contractorIdsList})
-          AND toDate(timestamp) >= '${fromStr}'
-          AND toDate(timestamp) <= '${toStr}'
+          AND toDate(timestamp, 'America/New_York') >= '${fromStr}'
+          AND toDate(timestamp, 'America/New_York') <= '${toStr}'
           AND JSONHas(payload, 'browser')
         GROUP BY contractor_id, domain
         HAVING seconds > 0

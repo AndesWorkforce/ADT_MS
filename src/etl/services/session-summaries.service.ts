@@ -494,23 +494,23 @@ export class SessionSummariesService {
         if (from && to) {
           const fromDate = from.split('T')[0];
           const toDate = to.split('T')[0];
-          dateFilter = `toDate(beat_timestamp) >= '${fromDate}' AND toDate(beat_timestamp) <= '${toDate}'`;
+          dateFilter = `toDate(beat_timestamp, 'America/New_York') >= '${fromDate}' AND toDate(beat_timestamp, 'America/New_York') <= '${toDate}'`;
         } else {
-          dateFilter = `toDate(beat_timestamp) >= today() - ${days}`;
+          dateFilter = `toDate(beat_timestamp, 'America/New_York') >= today() - ${days}`;
         }
 
         // Query que calcula totales y cuenta días únicos para promediar
         const query = `
           SELECT 
             toHour(beat_timestamp) AS hour,
-            uniqExact(toDate(beat_timestamp)) AS days_with_data,
+            uniqExact(toDate(beat_timestamp, 'America/New_York')) AS days_with_data,
             count(*) AS total_beat_count,
-            round(count(*) / uniqExact(toDate(beat_timestamp)), 2) AS avg_beat_count,
-            round((count(*) * 15) / uniqExact(toDate(beat_timestamp)), 2) AS avg_duration_seconds,
-            round((countIf(is_idle = 0) * 15) / uniqExact(toDate(beat_timestamp)), 2) AS avg_active_seconds,
-            round((countIf(is_idle = 1) * 15) / uniqExact(toDate(beat_timestamp)), 2) AS avg_idle_seconds,
-            round(sum(keyboard_count) / uniqExact(toDate(beat_timestamp)), 2) AS avg_keyboard_inputs,
-            round(sum(mouse_clicks) / uniqExact(toDate(beat_timestamp)), 2) AS avg_mouse_clicks
+            round(count(*) / uniqExact(toDate(beat_timestamp, 'America/New_York')), 2) AS avg_beat_count,
+            round((count(*) * 15) / uniqExact(toDate(beat_timestamp, 'America/New_York')), 2) AS avg_duration_seconds,
+            round((countIf(is_idle = 0) * 15) / uniqExact(toDate(beat_timestamp, 'America/New_York')), 2) AS avg_active_seconds,
+            round((countIf(is_idle = 1) * 15) / uniqExact(toDate(beat_timestamp, 'America/New_York')), 2) AS avg_idle_seconds,
+            round(sum(keyboard_count) / uniqExact(toDate(beat_timestamp, 'America/New_York')), 2) AS avg_keyboard_inputs,
+            round(sum(mouse_clicks) / uniqExact(toDate(beat_timestamp, 'America/New_York')), 2) AS avg_mouse_clicks
           FROM contractor_activity_15s
           WHERE contractor_id = '${contractorId}'
             AND ${dateFilter}
@@ -625,11 +625,11 @@ export class SessionSummariesService {
         if (from && to) {
           const fromDate = from.split('T')[0];
           const toDate = to.split('T')[0];
-          dateFilterBeats = `toDate(beat_timestamp) >= '${fromDate}' AND toDate(beat_timestamp) <= '${toDate}'`;
-          dateFilterEvents = `toDate(timestamp) >= '${fromDate}' AND toDate(timestamp) <= '${toDate}'`;
+          dateFilterBeats = `toDate(beat_timestamp, 'America/New_York') >= '${fromDate}' AND toDate(beat_timestamp, 'America/New_York') <= '${toDate}'`;
+          dateFilterEvents = `toDate(timestamp, 'America/New_York') >= '${fromDate}' AND toDate(timestamp, 'America/New_York') <= '${toDate}'`;
         } else {
-          dateFilterBeats = `toDate(beat_timestamp) >= today() - ${days}`;
-          dateFilterEvents = `toDate(timestamp) >= today() - ${days}`;
+          dateFilterBeats = `toDate(beat_timestamp, 'America/New_York') >= today() - ${days}`;
+          dateFilterEvents = `toDate(timestamp, 'America/New_York') >= today() - ${days}`;
         }
 
         const agentFilterBeats = effectiveAgentId
@@ -674,7 +674,7 @@ export class SessionSummariesService {
             FROM (
               SELECT
                 contractor_id,
-                toDate(beat_timestamp) AS workday,
+                toDate(beat_timestamp, 'America/New_York') AS workday,
                 toHour(beat_timestamp) AS hour,
                 count() AS total_beats,
                 countIf(is_idle = 0) AS active_beats,
@@ -690,7 +690,7 @@ export class SessionSummariesService {
             LEFT JOIN (
               SELECT
                 contractor_id,
-                toDate(timestamp) AS workday,
+                toDate(timestamp, 'America/New_York') AS workday,
                 toHour(timestamp) AS hour,
                 sum(JSONExtractFloat(payload, 'AppUsage', app) * ifNull(d.weight, 0.5)) AS weighted_seconds,
                 sum(JSONExtractFloat(payload, 'AppUsage', app)) AS total_seconds
@@ -709,7 +709,7 @@ export class SessionSummariesService {
             LEFT JOIN (
               SELECT
                 contractor_id,
-                toDate(timestamp) AS workday,
+                toDate(timestamp, 'America/New_York') AS workday,
                 toHour(timestamp) AS hour,
                 sum(
                   JSONExtractFloat(payload, 'browser', dc) *
