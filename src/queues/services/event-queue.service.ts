@@ -36,8 +36,6 @@ export class EventQueueService {
         },
       });
 
-      this.logger.debug(`Event queued: ${eventData.event_id} (Job: ${job.id})`);
-
       return job.id!;
     } catch (error) {
       this.logger.error(
