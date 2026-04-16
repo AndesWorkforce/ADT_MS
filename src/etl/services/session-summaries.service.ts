@@ -63,31 +63,35 @@ export class SessionSummariesService {
     dateFilter: string,
     agentFilterSql: string,
   ): string {
-    // Vista por agente: usar duración calendario, escalando active/idle
+    const tzStart = `toTimeZone(session_start, '${OPERATIONAL_TIMEZONE}')`;
+    const tzEnd = `toTimeZone(session_end, '${OPERATIONAL_TIMEZONE}')`;
+    const durSec = `dateDiff('second', ${tzStart}, ${tzEnd})`;
+    // Vista por agente: usar duración calendario, escalando active/idle.
+    // dateDiff debe usar DateTime (columnas base); no reutilizar alias String de formatDateTime.
     return `
       SELECT 
         session_id,
         contractor_id,
         agent_id,
         formatDateTime(
-          toTimeZone(session_start, '${OPERATIONAL_TIMEZONE}'),
+          ${tzStart},
           '%Y-%m-%d %H:%i:%s'
         ) AS session_start,
         formatDateTime(
-          toTimeZone(session_end, '${OPERATIONAL_TIMEZONE}'),
+          ${tzEnd},
           '%Y-%m-%d %H:%i:%s'
         ) AS session_end,
-        dateDiff('second', session_start, session_end) AS total_seconds,
+        ${durSec} AS total_seconds,
         round(
-          dateDiff('second', session_start, session_end)
+          ${durSec}
           * active_seconds
           / nullIf(total_seconds, 0)
         ) AS active_seconds,
         greatest(
           0,
-          dateDiff('second', session_start, session_end) -
+          ${durSec} -
           round(
-            dateDiff('second', session_start, session_end)
+            ${durSec}
             * active_seconds
             / nullIf(total_seconds, 0)
           )
@@ -98,7 +102,7 @@ export class SessionSummariesService {
       WHERE contractor_id = '${contractorId}'
         AND ${dateFilter}
         ${agentFilterSql}
-      ORDER BY session_start DESC
+      ORDER BY ${tzStart} DESC
     `;
   }
 
@@ -106,31 +110,34 @@ export class SessionSummariesService {
     contractorId: string,
     dateFilter: string,
   ): string {
-    // Consolidado: una fila por session_id
+    const gStart = `toTimeZone(g.session_start, '${OPERATIONAL_TIMEZONE}')`;
+    const gEnd = `toTimeZone(g.session_end, '${OPERATIONAL_TIMEZONE}')`;
+    const durSec = `dateDiff('second', ${gStart}, ${gEnd})`;
+    // Consolidado: una fila por session_id. dateDiff sobre columnas DateTime de g, no sobre alias String.
     return `
       SELECT 
         session_id,
         contractor_id,
         agent_id,
         formatDateTime(
-          toTimeZone(session_start, '${OPERATIONAL_TIMEZONE}'),
+          ${gStart},
           '%Y-%m-%d %H:%i:%s'
         ) AS session_start,
         formatDateTime(
-          toTimeZone(session_end, '${OPERATIONAL_TIMEZONE}'),
+          ${gEnd},
           '%Y-%m-%d %H:%i:%s'
         ) AS session_end,
-        dateDiff('second', session_start, session_end) AS total_seconds,
+        ${durSec} AS total_seconds,
         round(
-          dateDiff('second', session_start, session_end)
+          ${durSec}
           * active_seconds_sum
           / nullIf(total_seconds_sum, 0)
         ) AS active_seconds,
         greatest(
           0,
-          dateDiff('second', session_start, session_end) -
+          ${durSec} -
           round(
-            dateDiff('second', session_start, session_end)
+            ${durSec}
             * active_seconds_sum
             / nullIf(total_seconds_sum, 0)
           )
@@ -159,7 +166,7 @@ export class SessionSummariesService {
         ) AS t
         GROUP BY session_id, contractor_id
       ) AS g
-      ORDER BY session_start DESC
+      ORDER BY ${gStart} DESC
     `;
   }
 
