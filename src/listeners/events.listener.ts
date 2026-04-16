@@ -58,10 +58,6 @@ export class EventsListener {
           payload: eventRaw.payload,
           created_at: eventRaw.created_at,
         });
-
-        this.logger.debug(
-          `📬 Event queued - Event ID: ${eventRaw.event_id}, Contractor: ${eventRaw.contractor_id}`,
-        );
       } else {
         await this.rawService.saveEvent(eventRaw);
 
