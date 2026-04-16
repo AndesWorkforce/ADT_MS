@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 
+import { OPERATIONAL_TIMEZONE } from 'config';
 import { ClickHouseService } from '../../clickhouse/clickhouse.service';
 import { ContractorActivity15sDto } from '../dto/contractor-activity-15s.dto';
 
@@ -23,7 +24,10 @@ export class ActivityRepository {
         agent_id,
         session_id,
         agent_session_id,
-        beat_timestamp,
+        formatDateTime(
+          toTimeZone(beat_timestamp, '${OPERATIONAL_TIMEZONE}'),
+          '%Y-%m-%d %H:%i:%s'
+        ) AS beat_timestamp,
         is_idle,
         keyboard_count,
         mouse_clicks,
@@ -63,7 +67,10 @@ export class ActivityRepository {
         agent_id,
         session_id,
         agent_session_id,
-        beat_timestamp,
+        formatDateTime(
+          toTimeZone(beat_timestamp, '${OPERATIONAL_TIMEZONE}'),
+          '%Y-%m-%d %H:%i:%s'
+        ) AS beat_timestamp,
         is_idle,
         keyboard_count,
         mouse_clicks,

@@ -3,6 +3,7 @@ import { EventPattern, Payload } from '@nestjs/microservices';
 
 import { getMessagePattern, logError } from 'config';
 
+import { EtlService } from '../etl/services/etl.service';
 import { EtlQueueService } from '../queues/services/etl-queue.service';
 
 /**
@@ -36,14 +37,15 @@ interface SessionEtlTriggerPayload {
  * ✅ Cada cierre encola un job distinto (jobId con timestamp) para que varias agent sessions
  *    de la misma sesión principal disparen ETL en cada cierre y no se descarten como duplicados
  *
- * Nota: requiere USE_ETL_QUEUE=true en la configuración de ADT_MS.
- * Si la cola no está habilitada, se registra una advertencia pero no se lanza error.
+ * Si USE_ETL_QUEUE=false, ejecuta la orquestación de forma inline como fallback
+ * para no perder el ETL automático en producción.
  */
 @Controller()
 export class EtlTriggerListener {
   private readonly logger = new Logger(EtlTriggerListener.name);
 
   constructor(
+    private readonly etlService: EtlService,
     // Opcional: solo disponible cuando USE_ETL_QUEUE=true
     @Optional() private readonly etlQueueService?: EtlQueueService,
   ) {}
@@ -66,9 +68,28 @@ export class EtlTriggerListener {
     if (!this.etlQueueService) {
       this.logger.warn(
         `⚠️ [EtlTrigger] EtlQueueService not available (USE_ETL_QUEUE=false). ` +
-          `No ETL job will be queued for session=${sessionId}. ` +
-          `Set USE_ETL_QUEUE=true in ADT_MS to enable automatic session ETL on break/shift-end.`,
+          `Running ETL inline for session=${sessionId}. ` +
+          `Set USE_ETL_QUEUE=true in ADT_MS to use BullMQ on break/shift-end.`,
       );
+
+      try {
+        await this.etlService.runFullEtlForContractorOnSessionClose(
+          contractorId,
+          sessionId,
+        );
+
+        this.logger.log(
+          `✅ [EtlTrigger] Full ETL on session close completed inline — ` +
+            `session=${sessionId} contractor=${contractorId}`,
+        );
+      } catch (error) {
+        logError(
+          this.logger,
+          `❌ [EtlTrigger] Failed to run inline ETL — session=${sessionId} contractor=${contractorId}`,
+          error,
+        );
+      }
+
       return;
     }
 

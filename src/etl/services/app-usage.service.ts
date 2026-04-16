@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 
-import { envs } from 'config';
+import { envs, toDateTZ } from 'config';
 import { ClickHouseService } from '../../clickhouse/clickhouse.service';
 import { RedisKeys, RedisService } from '../../redis';
 
@@ -59,7 +59,7 @@ export class AppUsageService {
 
         // Fallback para compatibilidad: si no hay from/to pero sí days, usar days
         if (!from && !to && typeof days === 'number' && Number.isFinite(days)) {
-          where += ` AND workday >= today() - ${days}`;
+          where += ` AND workday >= ${toDateTZ(`now() - INTERVAL ${days} DAY`)}`;
         }
 
         const query = `
