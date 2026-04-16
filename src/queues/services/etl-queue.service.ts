@@ -1,4 +1,4 @@
-﻿import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 
@@ -100,26 +100,32 @@ export class EtlQueueService {
   // ============================================================================
 
   /**
-   * Encola un job para procesar el resumen de una sesión específica.
+   * Encola un job para procesar el resumen de sesión(es).
    *
-   * @param sessionId - ID de la sesión a procesar
-   * @param contractorId - ID del contractor (para logging/tracking)
+   * @param sessionId - Si se informa, recalcula solo esa sesión. Si no, modo idempotente
+   *   "todas las pendientes" (mismo criterio que `processActivityToSessionSummary()` sin args).
+   * @param contractorId - Opcional; solo logging/tracking en el job (no filtra el ETL global).
    * @returns ID del job creado
    */
   async addSessionSummaryJob(
-    sessionId: string,
-    contractorId: string,
+    sessionId?: string,
+    contractorId?: string,
   ): Promise<string> {
     try {
-      // JobId incluye timestamp para permitir reintentos/asistencias múltiples
-      const jobId = `session-summary-${sessionId}-${Date.now()}`;
+      // JobId legible: no usar un sessionId ficticio en `job.data` (rompe el ETL).
+      const jobIdSuffix = sessionId ?? 'all-pending';
+      const jobId = `session-summary-${jobIdSuffix}-${Date.now()}`;
 
       const jobData: EtlJobData = {
         jobType: JobType.SESSION_SUMMARIES,
         requestedAt: new Date(),
-        sessionId,
-        contractorId,
       };
+      if (sessionId !== undefined && sessionId !== '') {
+        jobData.sessionId = sessionId;
+      }
+      if (contractorId !== undefined && contractorId !== '') {
+        jobData.contractorId = contractorId;
+      }
 
       const job = await this.sessionSummariesQueue.add(
         JobType.SESSION_SUMMARIES,
@@ -132,13 +138,13 @@ export class EtlQueueService {
       );
 
       this.logger.log(
-        `📋 Session summary job queued: session=${sessionId} contractor=${contractorId} → Job ${job.id}`,
+        `📋 Session summary job queued: session=${sessionId ?? 'all-pending'} contractor=${contractorId ?? '—'} → Job ${job.id}`,
       );
 
       return job.id!;
     } catch (error) {
       this.logger.error(
-        `❌ Failed to queue session summary job for session ${sessionId}: ${error.message}`,
+        `❌ Failed to queue session summary job for session ${sessionId ?? 'all-pending'}: ${error.message}`,
       );
       throw error;
     }
