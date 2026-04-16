@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 
-import { envs } from 'config';
+import { envs, OPERATIONAL_TIMEZONE, toDateTZ } from 'config';
 import { ClickHouseService } from '../../clickhouse/clickhouse.service';
 import { RedisKeys, RedisService } from '../../redis';
 import { SessionSummaryDto } from '../dto/session-summary.dto';
@@ -41,9 +41,9 @@ export class SessionSummariesService {
     if (from && to) {
       const fromDate = from.split('T')[0];
       const toDate = to.split('T')[0];
-      return `toDate(session_start) >= '${fromDate}' AND toDate(session_start) <= '${toDate}'`;
+      return `${toDateTZ('session_start')} >= '${fromDate}' AND ${toDateTZ('session_start')} <= '${toDate}'`;
     }
-    return `toDate(session_start) >= today() - ${days}`;
+    return `${toDateTZ('session_start')} >= ${toDateTZ(`now() - INTERVAL ${days} DAY`)}`;
   }
 
   private buildAgentFilter(agentId?: string): {
@@ -69,8 +69,14 @@ export class SessionSummariesService {
         session_id,
         contractor_id,
         agent_id,
-        session_start,
-        session_end,
+        formatDateTime(
+          toTimeZone(session_start, '${OPERATIONAL_TIMEZONE}'),
+          '%Y-%m-%d %H:%i:%s'
+        ) AS session_start,
+        formatDateTime(
+          toTimeZone(session_end, '${OPERATIONAL_TIMEZONE}'),
+          '%Y-%m-%d %H:%i:%s'
+        ) AS session_end,
         dateDiff('second', session_start, session_end) AS total_seconds,
         round(
           dateDiff('second', session_start, session_end)
@@ -106,8 +112,14 @@ export class SessionSummariesService {
         session_id,
         contractor_id,
         agent_id,
-        session_start,
-        session_end,
+        formatDateTime(
+          toTimeZone(session_start, '${OPERATIONAL_TIMEZONE}'),
+          '%Y-%m-%d %H:%i:%s'
+        ) AS session_start,
+        formatDateTime(
+          toTimeZone(session_end, '${OPERATIONAL_TIMEZONE}'),
+          '%Y-%m-%d %H:%i:%s'
+        ) AS session_end,
         dateDiff('second', session_start, session_end) AS total_seconds,
         round(
           dateDiff('second', session_start, session_end)
@@ -308,9 +320,9 @@ export class SessionSummariesService {
         if (from && to) {
           const fromDate = from.split('T')[0];
           const toDate = to.split('T')[0];
-          dateFilter = `toDate(session_start) >= '${fromDate}' AND toDate(session_start) <= '${toDate}'`;
+          dateFilter = `${toDateTZ('session_start')} >= '${fromDate}' AND ${toDateTZ('session_start')} <= '${toDate}'`;
         } else {
-          dateFilter = `toDate(session_start) >= today() - ${days}`;
+          dateFilter = `${toDateTZ('session_start')} >= ${toDateTZ(`now() - INTERVAL ${days} DAY`)}`;
         }
 
         const agentFilter =
@@ -321,7 +333,7 @@ export class SessionSummariesService {
         // Obtener sesiones del contractor (opcionalmente por agent_id)
         const sessionsQuery = `
           SELECT 
-            toDate(session_start) AS session_day,
+            ${toDateTZ('session_start')} AS session_day,
             toDateTime(session_start) AS start_dt,
             toDateTime(session_end) AS end_dt
           FROM session_summary
@@ -496,13 +508,13 @@ export class SessionSummariesService {
           const toDate = to.split('T')[0];
           dateFilter = `toDate(beat_timestamp, 'America/New_York') >= '${fromDate}' AND toDate(beat_timestamp, 'America/New_York') <= '${toDate}'`;
         } else {
-          dateFilter = `toDate(beat_timestamp, 'America/New_York') >= today() - ${days}`;
+          dateFilter = `${toDateTZ('beat_timestamp')} >= ${toDateTZ(`now() - INTERVAL ${days} DAY`)}`;
         }
 
         // Query que calcula totales y cuenta días únicos para promediar
         const query = `
           SELECT 
-            toHour(beat_timestamp) AS hour,
+            toHour(toTimeZone(beat_timestamp, '${OPERATIONAL_TIMEZONE}')) AS hour,
             uniqExact(toDate(beat_timestamp, 'America/New_York')) AS days_with_data,
             count(*) AS total_beat_count,
             round(count(*) / uniqExact(toDate(beat_timestamp, 'America/New_York')), 2) AS avg_beat_count,
@@ -514,8 +526,8 @@ export class SessionSummariesService {
           FROM contractor_activity_15s
           WHERE contractor_id = '${contractorId}'
             AND ${dateFilter}
-            AND toHour(beat_timestamp) >= ${startHour}
-            AND toHour(beat_timestamp) < ${endHour}
+            AND toHour(toTimeZone(beat_timestamp, '${OPERATIONAL_TIMEZONE}')) >= ${startHour}
+            AND toHour(toTimeZone(beat_timestamp, '${OPERATIONAL_TIMEZONE}')) < ${endHour}
           GROUP BY hour
           ORDER BY hour ASC
         `;
@@ -628,8 +640,8 @@ export class SessionSummariesService {
           dateFilterBeats = `toDate(beat_timestamp, 'America/New_York') >= '${fromDate}' AND toDate(beat_timestamp, 'America/New_York') <= '${toDate}'`;
           dateFilterEvents = `toDate(timestamp, 'America/New_York') >= '${fromDate}' AND toDate(timestamp, 'America/New_York') <= '${toDate}'`;
         } else {
-          dateFilterBeats = `toDate(beat_timestamp, 'America/New_York') >= today() - ${days}`;
-          dateFilterEvents = `toDate(timestamp, 'America/New_York') >= today() - ${days}`;
+          dateFilterBeats = `${toDateTZ('beat_timestamp')} >= ${toDateTZ(`now() - INTERVAL ${days} DAY`)}`;
+          dateFilterEvents = `${toDateTZ('timestamp')} >= ${toDateTZ(`now() - INTERVAL ${days} DAY`)}`;
         }
 
         const agentFilterBeats = effectiveAgentId
@@ -675,7 +687,7 @@ export class SessionSummariesService {
               SELECT
                 contractor_id,
                 toDate(beat_timestamp, 'America/New_York') AS workday,
-                toHour(beat_timestamp) AS hour,
+                toHour(toTimeZone(beat_timestamp, '${OPERATIONAL_TIMEZONE}')) AS hour,
                 count() AS total_beats,
                 countIf(is_idle = 0) AS active_beats,
                 sum(keyboard_count) AS total_keyboard_inputs,
@@ -683,15 +695,15 @@ export class SessionSummariesService {
               FROM contractor_activity_15s
               WHERE contractor_id = '${contractorId}'
                 AND ${dateFilterBeats}
-                AND toHour(beat_timestamp) >= ${startHour}
-                AND toHour(beat_timestamp) < ${endHour}${agentFilterBeats}
+                AND toHour(toTimeZone(beat_timestamp, '${OPERATIONAL_TIMEZONE}')) >= ${startHour}
+                AND toHour(toTimeZone(beat_timestamp, '${OPERATIONAL_TIMEZONE}')) < ${endHour}${agentFilterBeats}
               GROUP BY contractor_id, workday, hour
             ) b
             LEFT JOIN (
               SELECT
                 contractor_id,
                 toDate(timestamp, 'America/New_York') AS workday,
-                toHour(timestamp) AS hour,
+                toHour(toTimeZone(timestamp, '${OPERATIONAL_TIMEZONE}')) AS hour,
                 sum(JSONExtractFloat(payload, 'AppUsage', app) * ifNull(d.weight, 0.5)) AS weighted_seconds,
                 sum(JSONExtractFloat(payload, 'AppUsage', app)) AS total_seconds
               FROM events_raw
@@ -699,8 +711,8 @@ export class SessionSummariesService {
               LEFT JOIN apps_dimension d ON d.name = app
               WHERE contractor_id = '${contractorId}'
                 AND ${dateFilterEvents}
-                AND toHour(timestamp) >= ${startHour}
-                AND toHour(timestamp) < ${endHour}${agentFilterEvents}
+                AND toHour(toTimeZone(timestamp, '${OPERATIONAL_TIMEZONE}')) >= ${startHour}
+                AND toHour(toTimeZone(timestamp, '${OPERATIONAL_TIMEZONE}')) < ${endHour}${agentFilterEvents}
                 AND JSONHas(payload, 'AppUsage')
               GROUP BY contractor_id, workday, hour
             ) app ON app.contractor_id = b.contractor_id
@@ -710,7 +722,7 @@ export class SessionSummariesService {
               SELECT
                 contractor_id,
                 toDate(timestamp, 'America/New_York') AS workday,
-                toHour(timestamp) AS hour,
+                toHour(toTimeZone(timestamp, '${OPERATIONAL_TIMEZONE}')) AS hour,
                 sum(
                   JSONExtractFloat(payload, 'browser', dc) *
                   ifNull(d.weight, 1)
@@ -721,8 +733,8 @@ export class SessionSummariesService {
               LEFT JOIN domains_dimension d ON d.domain = dc
               WHERE contractor_id = '${contractorId}'
                 AND ${dateFilterEvents}
-                AND toHour(timestamp) >= ${startHour}
-                AND toHour(timestamp) < ${endHour}${agentFilterEvents}
+                AND toHour(toTimeZone(timestamp, '${OPERATIONAL_TIMEZONE}')) >= ${startHour}
+                AND toHour(toTimeZone(timestamp, '${OPERATIONAL_TIMEZONE}')) < ${endHour}${agentFilterEvents}
                 AND JSONHas(payload, 'browser')
               GROUP BY contractor_id, workday, hour
             ) web ON web.contractor_id = b.contractor_id
@@ -829,9 +841,9 @@ export class SessionSummariesService {
         if (from && to) {
           const fromDate = from.split('T')[0];
           const toDate = to.split('T')[0];
-          dateFilter = `toDate(ss.session_start) >= '${fromDate}' AND toDate(ss.session_start) <= '${toDate}'`;
+          dateFilter = `${toDateTZ('ss.session_start')} >= '${fromDate}' AND ${toDateTZ('ss.session_start')} <= '${toDate}'`;
         } else {
-          dateFilter = `toDate(ss.session_start) >= today() - ${days}`;
+          dateFilter = `${toDateTZ('ss.session_start')} >= ${toDateTZ(`now() - INTERVAL ${days} DAY`)}`;
         }
 
         // Construir filtros adicionales basados en los parámetros

@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 
-import { envs } from 'config';
+import { envs, toDateTZ } from 'config';
 import { ClickHouseService } from '../../clickhouse/clickhouse.service';
 import { RedisKeys, RedisService } from '../../redis';
 
@@ -48,7 +48,7 @@ export class RankingService {
         if (workday) {
           query += ` AND workday = '${workday.split('T')[0]}'`;
         } else {
-          query += ` AND workday = today() - 1`;
+          query += ` AND workday = ${toDateTZ('now() - INTERVAL 1 DAY')}`;
         }
 
         query += ` ORDER BY productivity_score DESC LIMIT ${limit}`;

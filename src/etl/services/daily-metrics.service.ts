@@ -1,6 +1,6 @@
 ﻿import { Injectable, Logger } from '@nestjs/common';
 
-import { envs, formatDateInTZ } from 'config';
+import { envs, formatDateInTZ, toDateTZ } from 'config';
 import { ClickHouseService } from '../../clickhouse/clickhouse.service';
 import { RedisKeys, RedisService } from '../../redis';
 
@@ -51,7 +51,7 @@ export class DailyMetricsService {
             created_at
           FROM contractor_daily_metrics FINAL
           WHERE contractor_id = '${contractorId}'
-            AND workday >= today() - ${days}
+            AND workday >= ${toDateTZ(`now() - INTERVAL ${days} DAY`)}
           ORDER BY workday DESC
         `;
 

@@ -46,8 +46,14 @@ services:
       NATS_PORT: '${NATS_PORT:-4222}'
       NATS_USERNAME: '${NATS_USERNAME:-andes_nats}'
       NATS_PASSWORD: '${NATS_PASSWORD:-andesworkforce_nats}'
+      REDIS_HOST: '${REDIS_HOST}'
+      REDIS_PORT: '${REDIS_PORT:-6379}'
+      REDIS_PASSWORD: '${REDIS_PASSWORD:-}'
+      REDIS_DB: '${REDIS_DB:-0}'
+      REDIS_QUEUE_DB: '${REDIS_QUEUE_DB:-1}'
+      USE_ETL_QUEUE: '${USE_ETL_QUEUE:-true}'
       DEV_LOGS: '${DEV_LOGS:-true}'
-      ENVIRONMENT: '${ENVIRONMENT:-development}'
+      ENVIRONMENT: '${ENVIRONMENT:-production}'
 
 networks:
   default:

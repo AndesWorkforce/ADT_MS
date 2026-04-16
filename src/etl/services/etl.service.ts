@@ -1,6 +1,6 @@
 ﻿import { Injectable, Logger } from '@nestjs/common';
 
-import { formatDateInTZ } from 'config';
+import { formatDateInTZ, toDateTZ } from 'config';
 import { ClickHouseService } from '../../clickhouse/clickhouse.service';
 import { ContractorDailyMetricsDto } from '../dto/contractor-daily-metrics.dto';
 import { SessionSummaryDto } from '../dto/session-summary.dto';
@@ -630,7 +630,7 @@ export class EtlService {
         await this.clickHouseService.command(`
           ALTER TABLE session_summary DELETE
           WHERE contractor_id = '${contractorId}'
-            AND toDate(session_start) = toDate('${workdayStr}')
+            AND ${toDateTZ('session_start')} = toDate('${workdayStr}')
         `);
       }
 
@@ -724,7 +724,7 @@ export class EtlService {
       } else if (contractorId && workdayStr) {
         selectWhere = `
           WHERE contractor_id = '${contractorId}'
-            AND toDate(session_start) = toDate('${workdayStr}')
+            AND ${toDateTZ('session_start')} = toDate('${workdayStr}')
         `;
       } else {
         selectWhere = `WHERE session_start >= today() - 7`;
@@ -787,8 +787,8 @@ export class EtlService {
       // 1) Borrar todas las filas en el rango de fechas
       await this.clickHouseService.command(`
         ALTER TABLE session_summary DELETE
-        WHERE toDate(session_start) >= toDate('${fromStr}')
-          AND toDate(session_start) <= toDate('${toStr}')
+        WHERE ${toDateTZ('session_start')} >= toDate('${fromStr}')
+          AND ${toDateTZ('session_start')} <= toDate('${toStr}')
       `);
 
       // 2) Insertar nuevamente todas las sesiones del rango desde contractor_activity_15s
@@ -866,8 +866,8 @@ export class EtlService {
       const countRes = await this.clickHouseService.query<{ cnt: number }>(`
         SELECT count() AS cnt
         FROM session_summary
-        WHERE toDate(session_start) >= toDate('${fromStr}')
-          AND toDate(session_start) <= toDate('${toStr}')
+        WHERE ${toDateTZ('session_start')} >= toDate('${fromStr}')
+          AND ${toDateTZ('session_start')} <= toDate('${toStr}')
       `);
 
       const count = Number(countRes[0]?.cnt || 0);
