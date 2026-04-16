@@ -875,13 +875,13 @@ export class AdtListener {
       // Nuevo modo: rango de fechas completo (from/to) para TODOS los contractors.
       // En este modo, se ejecuta de forma síncrona y NO se usa la cola BullMQ.
       if (from && to) {
-        const fromDate = new Date(from);
-        const toDate = new Date(to);
+        const fromDay = from.split('T')[0];
+        const toDay = to.split('T')[0];
 
         const count =
           await this.etlService.reprocessSessionSummariesForDateRange(
-            fromDate,
-            toDate,
+            fromDay,
+            toDay,
           );
 
         return {
@@ -895,8 +895,8 @@ export class AdtListener {
       // Encolar job en BullMQ si la cola ETL está habilitada
       if (envs.queues.useEtlQueue && this.etlQueueService) {
         const jobId = await this.etlQueueService.addSessionSummaryJob(
-          sessionId || 'all-pending',
-          contractorId || 'unknown',
+          sessionId,
+          contractorId,
         );
 
         return {

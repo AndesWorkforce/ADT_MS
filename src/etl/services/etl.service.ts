@@ -764,21 +764,31 @@ export class EtlService {
     }
   }
 
+  private static readonly YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
+
   /**
    * Reprocesa TODOS los resúmenes de sesión (`session_summary`) para un rango de fechas,
    * para TODOS los contractors. Útil para corregir errores en la fórmula de productividad.
+   *
+   * @param fromDay - Inicio inclusive, calendario en TZ operativa (`YYYY-MM-DD`), alineado con la UI / GET sessions.
+   * @param toDay - Fin inclusive, mismo formato.
    *
    * Pasos:
    * - DELETE de filas en `session_summary` cuyo session_start esté entre from/to.
    * - INSERT SELECT desde `contractor_activity_15s` (mismas joins de apps y browser) sin cláusula NOT IN.
    */
   async reprocessSessionSummariesForDateRange(
-    fromDate: Date,
-    toDate: Date,
+    fromDay: string,
+    toDay: string,
   ): Promise<number> {
     try {
-      const fromStr = formatDateInTZ(fromDate);
-      const toStr = formatDateInTZ(toDate);
+      const fromStr = fromDay.trim();
+      const toStr = toDay.trim();
+      if (!EtlService.YMD_RE.test(fromStr) || !EtlService.YMD_RE.test(toStr)) {
+        throw new Error(
+          `Invalid session summary range: expected YYYY-MM-DD, got '${fromDay}' / '${toDay}'`,
+        );
+      }
 
       this.logger.log(
         `🔄 Reprocessing session_summary for date range ${fromStr} to ${toStr} (ALL contractors)`,
