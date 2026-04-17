@@ -1,6 +1,13 @@
-﻿import { Injectable, Logger } from '@nestjs/common';
+﻿import { DateTime } from 'luxon';
+import { Injectable, Logger } from '@nestjs/common';
 
-import { formatDateInTZ, toDateTZ } from 'config';
+import {
+  coerceToOperationalDayStart,
+  formatDateInTZ,
+  OPERATIONAL_TIMEZONE,
+  toDateTZ,
+  wallTimeToUtcInOperationalZone,
+} from 'config';
 import { ClickHouseService } from '../../clickhouse/clickhouse.service';
 import { ContractorDailyMetricsDto } from '../dto/contractor-daily-metrics.dto';
 import { SessionSummaryDto } from '../dto/session-summary.dto';
@@ -86,7 +93,7 @@ export class EtlService {
         }>(`
           SELECT count() AS cnt
           FROM events_raw
-          WHERE toDate(timestamp, 'America/New_York') = toDate('${dayStr}')
+          WHERE toDate(timestamp, '${OPERATIONAL_TIMEZONE}') = toDate('${dayStr}')
           ${eventsFilter}
         `);
         const estimatedInserted = Number(insertedRes[0]?.cnt || 0);
@@ -147,54 +154,78 @@ export class EtlService {
       return { from, to: now };
     }
 
+    const copy = (d: Date) => new Date(d.getTime());
+
     if (fromDate && !toDate) {
-      const d = new Date(fromDate);
+      const d = copy(fromDate);
       if (floorToDay) {
-        d.setUTCHours(0, 0, 0, 0);
+        return {
+          from: DateTime.fromJSDate(d)
+            .setZone(OPERATIONAL_TIMEZONE)
+            .startOf('day')
+            .toJSDate(),
+          to: DateTime.fromJSDate(d)
+            .setZone(OPERATIONAL_TIMEZONE)
+            .startOf('day')
+            .toJSDate(),
+        };
       }
       return { from: d, to: d };
     }
 
     if (!fromDate && toDate) {
-      const d = new Date(toDate);
+      const d = copy(toDate);
       if (floorToDay) {
-        d.setUTCHours(0, 0, 0, 0);
+        const day = DateTime.fromJSDate(d)
+          .setZone(OPERATIONAL_TIMEZONE)
+          .startOf('day')
+          .toJSDate();
+        return { from: day, to: day };
       }
       return { from: d, to: d };
     }
 
-    const from = new Date(fromDate as Date);
-    const to = new Date(toDate as Date);
+    const from = copy(fromDate as Date);
+    const to = copy(toDate as Date);
 
     if (floorToDay) {
-      from.setUTCHours(0, 0, 0, 0);
-      to.setUTCHours(0, 0, 0, 0);
+      return {
+        from: DateTime.fromJSDate(from)
+          .setZone(OPERATIONAL_TIMEZONE)
+          .startOf('day')
+          .toJSDate(),
+        to: DateTime.fromJSDate(to)
+          .setZone(OPERATIONAL_TIMEZONE)
+          .startOf('day')
+          .toJSDate(),
+      };
     }
 
     return { from, to };
   }
 
   /**
-   * Itera día por día (UTC) desde `from` hasta `to`, inclusive.
+   * Itera día por día (calendario en OPERATIONAL_TIMEZONE) desde `from` hasta `to`, inclusive.
    */
   private async iterateDays(
     from: Date,
     to: Date,
     fn: (day: Date) => Promise<void>,
   ): Promise<void> {
-    const start = new Date(from.getTime());
-    const end = new Date(to.getTime());
+    let cursor = DateTime.fromJSDate(from)
+      .setZone(OPERATIONAL_TIMEZONE)
+      .startOf('day');
+    const end = DateTime.fromJSDate(to)
+      .setZone(OPERATIONAL_TIMEZONE)
+      .startOf('day');
 
-    start.setUTCHours(0, 0, 0, 0);
-    end.setUTCHours(0, 0, 0, 0);
+    if (cursor > end) {
+      return;
+    }
 
-    for (
-      let d = new Date(start.getTime());
-      d.getTime() <= end.getTime();
-      d = new Date(d.getTime() + 24 * 60 * 60 * 1000)
-    ) {
-      // Pasamos una copia para evitar mutaciones externas
-      await fn(new Date(d.getTime()));
+    while (cursor <= end) {
+      await fn(cursor.toJSDate());
+      cursor = cursor.plus({ days: 1 });
     }
   }
 
@@ -223,10 +254,10 @@ export class EtlService {
         ) AS is_idle,
         toUInt32OrZero(JSON_VALUE(payload, '$.Keyboard.InputsCount')) AS keyboard_count,
         toUInt32OrZero(JSON_VALUE(payload, '$.Mouse.ClicksCount')) AS mouse_clicks,
-        toDate(timestamp, 'America/New_York') AS workday,
+        toDate(timestamp, '${OPERATIONAL_TIMEZONE}') AS workday,
         now() AS created_at
       FROM events_raw
-      WHERE toDate(timestamp, 'America/New_York') = toDate('${dayStr}')
+      WHERE toDate(timestamp, '${OPERATIONAL_TIMEZONE}') = toDate('${dayStr}')
       ${eventsFilter}
     `;
   }
@@ -289,7 +320,7 @@ export class EtlService {
           ) AS is_idle,
           toUInt32OrZero(JSON_VALUE(payload, '$.Keyboard.InputsCount')) AS keyboard_count,
           toUInt32OrZero(JSON_VALUE(payload, '$.Mouse.ClicksCount')) AS mouse_clicks,
-          toDate(timestamp, 'America/New_York') AS workday,
+          toDate(timestamp, '${OPERATIONAL_TIMEZONE}') AS workday,
           now() AS created_at
         FROM events_raw
         WHERE 1=1
@@ -360,7 +391,7 @@ export class EtlService {
           days.push(formatDateInTZ(d));
         });
       } else if (workday) {
-        days.push(formatDateInTZ(new Date(workday)));
+        days.push(formatDateInTZ(coerceToOperationalDayStart(workday)));
       } else {
         days.push(formatDateInTZ(new Date()));
       }
@@ -482,13 +513,13 @@ export class EtlService {
         LEFT JOIN (
           SELECT 
             contractor_id,
-            toDate(timestamp, 'America/New_York') AS workday,
+            toDate(timestamp, '${OPERATIONAL_TIMEZONE}') AS workday,
             sum(JSONExtractFloat(payload, 'AppUsage', app) * ifNull(d.weight, 0.5)) AS weighted_seconds,
             sum(JSONExtractFloat(payload, 'AppUsage', app)) AS total_seconds
           FROM events_raw
           ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app
           LEFT JOIN apps_dimension d ON d.name = app
-          WHERE toDate(timestamp, 'America/New_York') = toDate('${dayStr}')
+          WHERE toDate(timestamp, '${OPERATIONAL_TIMEZONE}') = toDate('${dayStr}')
           ${contractorFilter}
           GROUP BY contractor_id, workday
         ) app ON app.contractor_id = ca.contractor_id AND app.workday = ca.workday
@@ -501,12 +532,12 @@ export class EtlService {
           FROM (
             SELECT
               contractor_id,
-              toDate(timestamp, 'America/New_York') AS workday,
+              toDate(timestamp, '${OPERATIONAL_TIMEZONE}') AS workday,
               app,
               sum(JSONExtractFloat(payload, 'AppUsage', app)) AS sec
             FROM events_raw
             ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app
-            WHERE toDate(timestamp, 'America/New_York') = toDate('${dayStr}')
+            WHERE toDate(timestamp, '${OPERATIONAL_TIMEZONE}') = toDate('${dayStr}')
             ${contractorFilter}
             GROUP BY contractor_id, workday, app
           )
@@ -516,7 +547,7 @@ export class EtlService {
         LEFT JOIN (
           SELECT 
             contractor_id,
-            toDate(timestamp, 'America/New_York') AS workday,
+            toDate(timestamp, '${OPERATIONAL_TIMEZONE}') AS workday,
             sum(
               JSONExtractFloat(payload, 'browser', dc) *
               ifNull(d.weight, 1)
@@ -525,7 +556,7 @@ export class EtlService {
           FROM events_raw
           ARRAY JOIN JSONExtractKeys(payload, 'browser') AS dc
           LEFT JOIN domains_dimension d ON d.domain = dc
-          WHERE toDate(timestamp, 'America/New_York') = toDate('${dayStr}')
+          WHERE toDate(timestamp, '${OPERATIONAL_TIMEZONE}') = toDate('${dayStr}')
           ${contractorFilter}
           GROUP BY contractor_id, workday
         ) web ON web.contractor_id = ca.contractor_id AND web.workday = ca.workday
@@ -538,12 +569,12 @@ export class EtlService {
           FROM (
             SELECT
               contractor_id,
-              toDate(timestamp, 'America/New_York') AS workday,
+              toDate(timestamp, '${OPERATIONAL_TIMEZONE}') AS workday,
               dc,
               sum(JSONExtractFloat(payload, 'browser', dc)) AS sec
             FROM events_raw
             ARRAY JOIN JSONExtractKeys(payload, 'browser') AS dc
-            WHERE toDate(timestamp, 'America/New_York') = toDate('${dayStr}')
+            WHERE toDate(timestamp, '${OPERATIONAL_TIMEZONE}') = toDate('${dayStr}')
             ${contractorFilter}
             GROUP BY contractor_id, workday, dc
           )
@@ -615,7 +646,7 @@ export class EtlService {
 
       // Normalizar workday a yyyy-MM-dd si viene informado
       if (workday) {
-        workdayStr = formatDateInTZ(new Date(workday));
+        workdayStr = formatDateInTZ(coerceToOperationalDayStart(workday));
       }
 
       // 1) Borrado previo según el modo
@@ -651,7 +682,7 @@ export class EtlService {
       } else if (contractorId && workdayStr) {
         sessionFilter = `
           WHERE a.contractor_id = '${contractorId}'
-            AND toDate(a.beat_timestamp, 'America/New_York') = toDate('${workdayStr}')
+            AND toDate(a.beat_timestamp, '${OPERATIONAL_TIMEZONE}') = toDate('${workdayStr}')
         `;
       } else {
         sessionFilter = `
@@ -864,8 +895,8 @@ export class EtlService {
           GROUP BY e.session_id, e.agent_id
         ) web ON web.session_id = a.session_id AND coalesce(web.agent_id, '') = coalesce(a.agent_id, '')
         WHERE a.session_id IS NOT NULL
-          AND toDate(a.beat_timestamp, 'America/New_York') >= toDate('${fromStr}')
-          AND toDate(a.beat_timestamp, 'America/New_York') <= toDate('${toStr}')
+          AND toDate(a.beat_timestamp, '${OPERATIONAL_TIMEZONE}') >= toDate('${fromStr}')
+          AND toDate(a.beat_timestamp, '${OPERATIONAL_TIMEZONE}') <= toDate('${toStr}')
         GROUP BY a.session_id, a.agent_id
         SETTINGS max_partitions_per_insert_block=1000
       `;
@@ -909,8 +940,8 @@ export class EtlService {
   ): Promise<void> {
     const now = new Date();
     const todayStr = formatDateInTZ(now);
-    const todayStart = new Date(`${todayStr}T00:00:00`);
-    const todayEnd = new Date(now);
+    const todayStart = wallTimeToUtcInOperationalZone(todayStr, 0, 0, 0);
+    const todayEnd = now;
 
     this.logger.log(
       `🔄 [Orchestrator] Starting full ETL for contractor=${contractorId} session=${sessionId} (today: ${todayStr})`,
@@ -944,7 +975,7 @@ export class EtlService {
     workday: Date,
   ): Promise<AppUsageData[]> {
     try {
-      const workdayStr = this.formatDate(workday).split(' ')[0];
+      const workdayStr = formatDateInTZ(workday);
       const query = `
         SELECT 
           app_name,
@@ -952,7 +983,7 @@ export class EtlService {
         FROM events_raw
         ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') as app_name
         WHERE contractor_id = '${contractorId}'
-          AND toDate(timestamp, 'America/New_York') = '${workdayStr}'
+          AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') = '${workdayStr}'
           AND JSONHas(payload, 'AppUsage')
         GROUP BY app_name
         HAVING seconds > 0
@@ -983,7 +1014,7 @@ export class EtlService {
     workday: Date,
   ): Promise<BrowserUsageData[]> {
     try {
-      const workdayStr = this.formatDate(workday).split(' ')[0];
+      const workdayStr = formatDateInTZ(workday);
       const query = `
         SELECT 
           domain,
@@ -991,7 +1022,7 @@ export class EtlService {
         FROM events_raw
         ARRAY JOIN JSONExtractKeys(payload, 'browser') as domain
         WHERE contractor_id = '${contractorId}'
-          AND toDate(timestamp, 'America/New_York') = '${workdayStr}'
+          AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') = '${workdayStr}'
           AND JSONHas(payload, 'browser')
         GROUP BY domain
         HAVING seconds > 0

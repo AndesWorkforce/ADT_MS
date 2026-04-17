@@ -1,6 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 
-import { envs, OPERATIONAL_TIMEZONE, toDateTZ } from 'config';
+import {
+  envs,
+  OPERATIONAL_TIMEZONE,
+  parseDateTimeInOperationalZone,
+  toDateTZ,
+  wallTimeToUtcInOperationalZone,
+} from 'config';
 import { ClickHouseService } from '../../clickhouse/clickhouse.service';
 import { RedisKeys, RedisService } from '../../redis';
 import { SessionSummaryDto } from '../dto/session-summary.dto';
@@ -316,7 +322,7 @@ export class SessionSummariesService {
   > {
     const cacheKey =
       RedisKeys.hourlyActivityByContractor(contractorId, from, to, days) +
-      `:hours:${startHour}-${endHour}:session-duration-v3` +
+      `:hours:${startHour}-${endHour}:session-duration-v4-ny` +
       (agentId && agentId !== 'consolidated' ? `:agent:${agentId}` : '');
 
     return this.redisService.getOrSet(
@@ -341,28 +347,28 @@ export class SessionSummariesService {
         const sessionsQuery = `
           SELECT 
             ${toDateTZ('session_start')} AS session_day,
-            toDateTime(session_start) AS start_dt,
-            toDateTime(session_end) AS end_dt
+            formatDateTime(
+              toTimeZone(session_start, '${OPERATIONAL_TIMEZONE}'),
+              '%Y-%m-%d %H:%i:%s'
+            ) AS start_ny,
+            formatDateTime(
+              toTimeZone(session_end, '${OPERATIONAL_TIMEZONE}'),
+              '%Y-%m-%d %H:%i:%s'
+            ) AS end_ny
           FROM session_summary
           WHERE contractor_id = '${contractorId}'
             AND ${dateFilter}
             ${agentFilter}
-          ORDER BY session_day, start_dt
+          ORDER BY session_day, start_ny
         `;
 
         const sessions = (await this.clickHouseService.query(
           sessionsQuery,
         )) as Array<{
           session_day: string;
-          start_dt: string;
-          end_dt: string;
+          start_ny: string;
+          end_ny: string;
         }>;
-
-        // Normalizar fecha: ClickHouse puede devolver "YYYY-MM-DD HH:mm:ss"; ISO usa "T" para parseo consistente
-        const parseDt = (dt: string): Date => {
-          const normalized = String(dt).replace(' ', 'T');
-          return new Date(normalized);
-        };
 
         // Agrupar sesiones por día
         const sessionsByDay = new Map<
@@ -375,8 +381,8 @@ export class SessionSummariesService {
             sessionsByDay.set(day, []);
           }
           sessionsByDay.get(day)!.push({
-            start: parseDt(s.start_dt),
-            end: parseDt(s.end_dt),
+            start: parseDateTimeInOperationalZone(s.start_ny),
+            end: parseDateTimeInOperationalZone(s.end_ny),
           });
         }
 
@@ -411,14 +417,9 @@ export class SessionSummariesService {
           intervals.sort((a, b) => a.start.getTime() - b.start.getTime());
 
           for (let h = startHour; h <= endHour; h++) {
-            // hourPrev = (H-1):00 - la hora anterior en punto
-            // hourCurrent = H:00 - la hora actual en punto
-            const hourPrev = new Date(
-              `${day}T${String(h - 1).padStart(2, '0')}:00:00`,
-            );
-            const hourCurrent = new Date(
-              `${day}T${String(h).padStart(2, '0')}:00:00`,
-            );
+            // Límites de hora en OPERATIONAL_TIMEZONE (alineado con toHour(toTimeZone(...)) en otras queries)
+            const hourPrev = wallTimeToUtcInOperationalZone(day, h - 1, 0, 0);
+            const hourCurrent = wallTimeToUtcInOperationalZone(day, h, 0, 0);
 
             // Buscar sesiones que:
             // 1. NO habían terminado para la hora anterior (session_end > hourPrev)
@@ -513,7 +514,7 @@ export class SessionSummariesService {
         if (from && to) {
           const fromDate = from.split('T')[0];
           const toDate = to.split('T')[0];
-          dateFilter = `toDate(beat_timestamp, 'America/New_York') >= '${fromDate}' AND toDate(beat_timestamp, 'America/New_York') <= '${toDate}'`;
+          dateFilter = `toDate(beat_timestamp, '${OPERATIONAL_TIMEZONE}') >= '${fromDate}' AND toDate(beat_timestamp, '${OPERATIONAL_TIMEZONE}') <= '${toDate}'`;
         } else {
           dateFilter = `${toDateTZ('beat_timestamp')} >= ${toDateTZ(`now() - INTERVAL ${days} DAY`)}`;
         }
@@ -522,14 +523,14 @@ export class SessionSummariesService {
         const query = `
           SELECT 
             toHour(toTimeZone(beat_timestamp, '${OPERATIONAL_TIMEZONE}')) AS hour,
-            uniqExact(toDate(beat_timestamp, 'America/New_York')) AS days_with_data,
+            uniqExact(toDate(beat_timestamp, '${OPERATIONAL_TIMEZONE}')) AS days_with_data,
             count(*) AS total_beat_count,
-            round(count(*) / uniqExact(toDate(beat_timestamp, 'America/New_York')), 2) AS avg_beat_count,
-            round((count(*) * 15) / uniqExact(toDate(beat_timestamp, 'America/New_York')), 2) AS avg_duration_seconds,
-            round((countIf(is_idle = 0) * 15) / uniqExact(toDate(beat_timestamp, 'America/New_York')), 2) AS avg_active_seconds,
-            round((countIf(is_idle = 1) * 15) / uniqExact(toDate(beat_timestamp, 'America/New_York')), 2) AS avg_idle_seconds,
-            round(sum(keyboard_count) / uniqExact(toDate(beat_timestamp, 'America/New_York')), 2) AS avg_keyboard_inputs,
-            round(sum(mouse_clicks) / uniqExact(toDate(beat_timestamp, 'America/New_York')), 2) AS avg_mouse_clicks
+            round(count(*) / uniqExact(toDate(beat_timestamp, '${OPERATIONAL_TIMEZONE}')), 2) AS avg_beat_count,
+            round((count(*) * 15) / uniqExact(toDate(beat_timestamp, '${OPERATIONAL_TIMEZONE}')), 2) AS avg_duration_seconds,
+            round((countIf(is_idle = 0) * 15) / uniqExact(toDate(beat_timestamp, '${OPERATIONAL_TIMEZONE}')), 2) AS avg_active_seconds,
+            round((countIf(is_idle = 1) * 15) / uniqExact(toDate(beat_timestamp, '${OPERATIONAL_TIMEZONE}')), 2) AS avg_idle_seconds,
+            round(sum(keyboard_count) / uniqExact(toDate(beat_timestamp, '${OPERATIONAL_TIMEZONE}')), 2) AS avg_keyboard_inputs,
+            round(sum(mouse_clicks) / uniqExact(toDate(beat_timestamp, '${OPERATIONAL_TIMEZONE}')), 2) AS avg_mouse_clicks
           FROM contractor_activity_15s
           WHERE contractor_id = '${contractorId}'
             AND ${dateFilter}
@@ -595,6 +596,8 @@ export class SessionSummariesService {
 
   /**
    * Obtiene el % de productividad PROMEDIO por hora para un contractor.
+   * La agrupación por hora ya usa `toHour(toTimeZone(..., OPERATIONAL_TIMEZONE))` en ClickHouse
+   * (no depende de la TZ del proceso Node); coherente con el eje horario del front.
    * Calcula la productividad por hora usando la misma fórmula del ETL,
    * incluyendo ponderación por apps y browser (opción B).
    * Si se pasa agentId, filtra por ese agente; si no, devuelve datos consolidados (todos los agentes).
@@ -644,8 +647,8 @@ export class SessionSummariesService {
         if (from && to) {
           const fromDate = from.split('T')[0];
           const toDate = to.split('T')[0];
-          dateFilterBeats = `toDate(beat_timestamp, 'America/New_York') >= '${fromDate}' AND toDate(beat_timestamp, 'America/New_York') <= '${toDate}'`;
-          dateFilterEvents = `toDate(timestamp, 'America/New_York') >= '${fromDate}' AND toDate(timestamp, 'America/New_York') <= '${toDate}'`;
+          dateFilterBeats = `toDate(beat_timestamp, '${OPERATIONAL_TIMEZONE}') >= '${fromDate}' AND toDate(beat_timestamp, '${OPERATIONAL_TIMEZONE}') <= '${toDate}'`;
+          dateFilterEvents = `toDate(timestamp, '${OPERATIONAL_TIMEZONE}') >= '${fromDate}' AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') <= '${toDate}'`;
         } else {
           dateFilterBeats = `${toDateTZ('beat_timestamp')} >= ${toDateTZ(`now() - INTERVAL ${days} DAY`)}`;
           dateFilterEvents = `${toDateTZ('timestamp')} >= ${toDateTZ(`now() - INTERVAL ${days} DAY`)}`;
@@ -693,7 +696,7 @@ export class SessionSummariesService {
             FROM (
               SELECT
                 contractor_id,
-                toDate(beat_timestamp, 'America/New_York') AS workday,
+                toDate(beat_timestamp, '${OPERATIONAL_TIMEZONE}') AS workday,
                 toHour(toTimeZone(beat_timestamp, '${OPERATIONAL_TIMEZONE}')) AS hour,
                 count() AS total_beats,
                 countIf(is_idle = 0) AS active_beats,
@@ -709,7 +712,7 @@ export class SessionSummariesService {
             LEFT JOIN (
               SELECT
                 contractor_id,
-                toDate(timestamp, 'America/New_York') AS workday,
+                toDate(timestamp, '${OPERATIONAL_TIMEZONE}') AS workday,
                 toHour(toTimeZone(timestamp, '${OPERATIONAL_TIMEZONE}')) AS hour,
                 sum(JSONExtractFloat(payload, 'AppUsage', app) * ifNull(d.weight, 0.5)) AS weighted_seconds,
                 sum(JSONExtractFloat(payload, 'AppUsage', app)) AS total_seconds
@@ -728,7 +731,7 @@ export class SessionSummariesService {
             LEFT JOIN (
               SELECT
                 contractor_id,
-                toDate(timestamp, 'America/New_York') AS workday,
+                toDate(timestamp, '${OPERATIONAL_TIMEZONE}') AS workday,
                 toHour(toTimeZone(timestamp, '${OPERATIONAL_TIMEZONE}')) AS hour,
                 sum(
                   JSONExtractFloat(payload, 'browser', dc) *

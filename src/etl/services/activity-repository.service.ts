@@ -77,7 +77,7 @@ export class ActivityRepository {
         workday
       FROM contractor_activity_15s
       WHERE contractor_id = '${contractorId}'
-        AND toDate(beat_timestamp, 'America/New_York') = '${workday}'
+        AND toDate(beat_timestamp, '${OPERATIONAL_TIMEZONE}') = '${workday}'
       ORDER BY beat_timestamp
     `;
 
@@ -90,26 +90,18 @@ export class ActivityRepository {
    */
   private ensureClickHouseDateTimeString(input: string | Date): string {
     if (typeof input === 'string') {
-      // Si ya parece un DateTime con espacio, lo usamos tal cual
       if (input.includes(' ')) {
         return input;
       }
 
-      // Si viene en ISO con 'T', lo parseamos y formateamos
       if (input.includes('T')) {
         const dateObj = new Date(input);
-        return this.formatDateTime(dateObj);
+        return dateObj.toISOString().replace('T', ' ').slice(0, 19);
       }
 
-      // Si viene como 'YYYY-MM-DD', dejamos que el caller decida si quiere
-      // 00:00 o 23:59; aquí lo tratamos como 00:00 por defecto.
       return `${input} 00:00:00`;
     }
 
-    return this.formatDateTime(input);
-  }
-
-  private formatDateTime(date: Date): string {
-    return date.toISOString().replace('T', ' ').slice(0, 19);
+    return input.toISOString().replace('T', ' ').slice(0, 19);
   }
 }

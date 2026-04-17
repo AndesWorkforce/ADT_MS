@@ -55,6 +55,9 @@ importers:
       keyv:
         specifier: ^5.5.5
         version: 5.5.5
+      luxon:
+        specifier: ^3.5.0
+        version: 3.7.2
       nats:
         specifier: ^2.29.3
         version: 2.29.3
@@ -92,6 +95,9 @@ importers:
       '@types/jest':
         specifier: ^29.5.2
         version: 29.5.14
+      '@types/luxon':
+        specifier: ^3.4.2
+        version: 3.7.1
       '@types/node':
         specifier: ^20.3.1
         version: 20.19.23
@@ -1400,6 +1406,12 @@ packages:
     resolution:
       {
         integrity: sha512-5+fP8P8MFNC+AyZCDxrB2pkZFPGzqQWUzpSeuuVLvm8VMcorNYavBqoFcxK8bQz4Qsbn4oUEEem4wDLfcysGHA==,
+      }
+
+  '@types/luxon@3.7.1':
+    resolution:
+      {
+        integrity: sha512-H3iskjFIAn5SlJU7OuxUmTEpebK6TKB8rxZShDslBMZJ5u9S//KM1sbdAisiSrqwLQncVjnpi2OK2J51h+4lsg==,
       }
 
   '@types/methods@1.1.4':
@@ -7218,6 +7230,8 @@ snapshots:
       pretty-format: 29.7.0
 
   '@types/json-schema@7.0.15': {}
+
+  '@types/luxon@3.7.1': {}
 
   '@types/methods@1.1.4': {}
 

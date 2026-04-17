@@ -1,6 +1,16 @@
-﻿import { Injectable, Logger } from '@nestjs/common';
+﻿import { DateTime } from 'luxon';
+import { Injectable, Logger } from '@nestjs/common';
 
-import { envs, formatDateInTZ } from 'config';
+import {
+  envs,
+  formatDateInTZ,
+  getOperationalDayRangeFromDates,
+  OPERATIONAL_TIMEZONE,
+  parseCalendarDayEnd,
+  parseCalendarDayStart,
+  parseDateTimeInOperationalZone,
+  toStartOfOperationalDay,
+} from 'config';
 import { ClickHouseService } from '../../clickhouse/clickhouse.service';
 import { UsageDataService } from './usage-data.service';
 import { ContractorActivity15sDto } from '../dto/contractor-activity-15s.dto';
@@ -34,7 +44,9 @@ export class RealtimeMetricsService {
    */
   async getRealtimeMetrics(contractorId: string, workday?: Date) {
     // Crear una copia del Date para no modificar el original
-    const workdayDate = workday ? new Date(workday) : new Date();
+    const workdayDate = workday
+      ? toStartOfOperationalDay(new Date(workday))
+      : new Date();
     const workdayStr = formatDateInTZ(workdayDate);
 
     const cacheKey = RedisKeys.realTimeMetricsByContractor(
@@ -150,10 +162,12 @@ export class RealtimeMetricsService {
       };
     }
 
-    // Convertir timestamps
+    // Convertir timestamps (strings NY-local desde activityRepository → Date UTC correctos)
     for (const beat of beats) {
       if (typeof beat.beat_timestamp === 'string') {
-        beat.beat_timestamp = new Date(beat.beat_timestamp);
+        beat.beat_timestamp = parseDateTimeInOperationalZone(
+          beat.beat_timestamp,
+        );
       }
     }
 
@@ -255,7 +269,9 @@ export class RealtimeMetricsService {
       }
     >;
   }> {
-    const workdayDate = workday ? new Date(workday) : new Date();
+    const workdayDate = workday
+      ? toStartOfOperationalDay(new Date(workday))
+      : new Date();
     const workdayStr = formatDateInTZ(workdayDate);
 
     const cacheKey = RedisKeys.productivityByAgent(contractorId, workdayStr);
@@ -276,7 +292,7 @@ export class RealtimeMetricsService {
             workday
           FROM contractor_activity_15s
           WHERE contractor_id = '${contractorId}'
-            AND toDate(beat_timestamp, 'America/New_York') = '${workdayStr}'
+            AND toDate(beat_timestamp, '${OPERATIONAL_TIMEZONE}') = '${workdayStr}'
             AND agent_id IS NOT NULL
           ORDER BY agent_id, beat_timestamp
         `;
@@ -393,7 +409,7 @@ export class RealtimeMetricsService {
       FROM events_raw
       ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app
       WHERE contractor_id = '${contractorId}'
-        AND toDate(timestamp, 'America/New_York') = '${workdayStr}'
+        AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') = '${workdayStr}'
         AND agent_id IN (${agentIdsList})
         AND JSONHas(payload, 'AppUsage')
       GROUP BY agent_id, app
@@ -450,7 +466,7 @@ export class RealtimeMetricsService {
       FROM events_raw
       ARRAY JOIN JSONExtractKeys(payload, 'browser') AS domain
       WHERE contractor_id = '${contractorId}'
-        AND toDate(timestamp, 'America/New_York') = '${workdayStr}'
+        AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') = '${workdayStr}'
         AND agent_id IN (${agentIdsList})
         AND JSONHas(payload, 'browser')
       GROUP BY agent_id, domain
@@ -503,8 +519,8 @@ export class RealtimeMetricsService {
       FROM events_raw
       ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app
       WHERE contractor_id = '${contractorId}'
-        AND toDate(timestamp, 'America/New_York') >= '${fromStr}'
-        AND toDate(timestamp, 'America/New_York') <= '${toStr}'
+        AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') >= '${fromStr}'
+        AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') <= '${toStr}'
         AND agent_id IN (${agentIdsList})
         AND JSONHas(payload, 'AppUsage')
       GROUP BY agent_id, app
@@ -563,8 +579,8 @@ export class RealtimeMetricsService {
       FROM events_raw
       ARRAY JOIN JSONExtractKeys(payload, 'browser') AS domain
       WHERE contractor_id = '${contractorId}'
-        AND toDate(timestamp, 'America/New_York') >= '${fromStr}'
-        AND toDate(timestamp, 'America/New_York') <= '${toStr}'
+        AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') >= '${fromStr}'
+        AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') <= '${toStr}'
         AND agent_id IN (${agentIdsList})
         AND JSONHas(payload, 'browser')
       GROUP BY agent_id, domain
@@ -632,12 +648,10 @@ export class RealtimeMetricsService {
       }
     >;
   }> {
-    const from = new Date(fromDate);
-    const to = new Date(toDate);
-    to.setHours(23, 59, 59, 999);
-
-    const fromStr = formatDateInTZ(from);
-    const toStr = formatDateInTZ(to);
+    const { from, to, fromStr, toStr } = getOperationalDayRangeFromDates(
+      fromDate,
+      toDate,
+    );
 
     const cacheKey = RedisKeys.productivityByAgentRange(
       contractorId,
@@ -777,18 +791,16 @@ export class RealtimeMetricsService {
     fromDate: Date,
     toDate: Date,
   ): Promise<any> {
-    const from = new Date(fromDate);
-    const to = new Date(toDate);
-    to.setHours(23, 59, 59, 999);
-
-    const fromStr = formatDateInTZ(from);
-    const toStr = formatDateInTZ(to);
+    const { from, to, fromStr, toStr } = getOperationalDayRangeFromDates(
+      fromDate,
+      toDate,
+    );
 
     // Leer beats consolidados por timestamp (multi-agente) en el rango
     const beatsQuery = `
       SELECT
         contractor_id,
-        toDate(beat_timestamp, 'America/New_York') AS workday,
+        toDate(beat_timestamp, '${OPERATIONAL_TIMEZONE}') AS workday,
         beat_timestamp,
         min(is_idle) AS is_idle,
         sum(keyboard_count) AS keyboard_count,
@@ -938,7 +950,7 @@ export class RealtimeMetricsService {
             sum(keyboard_count)                AS keyboard_count,
             sum(mouse_clicks)                  AS mouse_clicks
           FROM contractor_activity_15s
-          WHERE toDate(beat_timestamp, 'America/New_York') = '${workdayStr}'
+          WHERE toDate(beat_timestamp, '${OPERATIONAL_TIMEZONE}') = '${workdayStr}'
             ${filterClause}
           GROUP BY contractor_id, beat_timestamp
         )
@@ -1030,7 +1042,9 @@ export class RealtimeMetricsService {
       team_id?: string;
     },
   ): Promise<any[]> {
-    const workdayDate = workday ? new Date(workday) : new Date();
+    const workdayDate = workday
+      ? toStartOfOperationalDay(new Date(workday))
+      : new Date();
     const workdayStr = formatDateInTZ(workdayDate);
 
     const cacheKey = RedisKeys.allRealTimeMetricsByWorkday(workdayStr, filters);
@@ -1153,12 +1167,10 @@ export class RealtimeMetricsService {
       team_id?: string;
     },
   ): Promise<any[]> {
-    const from = new Date(fromDate);
-    const to = new Date(toDate);
-    to.setHours(23, 59, 59, 999);
-
-    const fromStr = formatDateInTZ(from);
-    const toStr = formatDateInTZ(to);
+    const { fromStr, toStr } = getOperationalDayRangeFromDates(
+      fromDate,
+      toDate,
+    );
     const cacheKey = RedisKeys.allRealTimeMetricsByDateRange(
       fromStr,
       toStr,
@@ -1268,22 +1280,21 @@ export class RealtimeMetricsService {
     this.logger.debug(
       `📊 Fetched ${results.length} contractors from contractor_daily_metrics (${fromStr} to ${toStr})`,
     );
-    const fromDate = new Date(fromStr);
-    const toDate = new Date(toStr);
-    toDate.setHours(23, 59, 59, 999);
+    const rangeFrom = parseCalendarDayStart(fromStr);
+    const rangeTo = parseCalendarDayEnd(toStr);
 
     const resultContractorIds = results.map((r) => r.contractor_id);
 
     const [appUsageMap, browserUsageMap] = await Promise.all([
       this.usageDataService.getAppUsageAggregatedForMultiple(
         resultContractorIds,
-        fromDate,
-        toDate,
+        rangeFrom,
+        rangeTo,
       ),
       this.usageDataService.getBrowserUsageAggregatedForMultiple(
         resultContractorIds,
-        fromDate,
-        toDate,
+        rangeFrom,
+        rangeTo,
       ),
     ]);
 
@@ -1395,12 +1406,10 @@ export class RealtimeMetricsService {
     fromDate: Date,
     toDate: Date,
   ): Promise<any> {
-    const from = new Date(fromDate);
-    const to = new Date(toDate);
-    to.setHours(23, 59, 59, 999);
-
-    const fromStr = formatDateInTZ(from);
-    const toStr = formatDateInTZ(to);
+    const { from, to, fromStr, toStr } = getOperationalDayRangeFromDates(
+      fromDate,
+      toDate,
+    );
     const cacheKey = RedisKeys.realTimeMetricsByContractorRange(
       contractorId,
       fromStr,
@@ -1690,26 +1699,25 @@ export class RealtimeMetricsService {
         let allMetrics: any[];
 
         if (period === 'day') {
-          const today = new Date();
-          allMetrics = await this.getAllRealtimeMetrics(today, undefined);
+          const todayStart = DateTime.now()
+            .setZone(OPERATIONAL_TIMEZONE)
+            .startOf('day')
+            .toJSDate();
+          allMetrics = await this.getAllRealtimeMetrics(todayStart, undefined);
         } else {
-          const today = new Date();
-          today.setHours(23, 59, 59, 999);
+          const zNow = DateTime.now().setZone(OPERATIONAL_TIMEZONE);
+          const todayEnd = zNow.endOf('day').toJSDate();
           let fromDate: Date;
 
           if (period === 'week') {
-            fromDate = new Date(today);
-            fromDate.setUTCDate(fromDate.getUTCDate() - 6);
-            fromDate.setHours(0, 0, 0, 0);
+            fromDate = zNow.minus({ days: 6 }).startOf('day').toJSDate();
           } else {
-            fromDate = new Date(today);
-            fromDate.setUTCDate(1);
-            fromDate.setHours(0, 0, 0, 0);
+            fromDate = zNow.startOf('month').startOf('day').toJSDate();
           }
 
           allMetrics = await this.getAllRealtimeMetricsByDateRange(
             fromDate,
-            today,
+            todayEnd,
             undefined,
           );
         }
@@ -1776,27 +1784,24 @@ export class RealtimeMetricsService {
       async () => {
         const dbName = envs.clickhouse.database;
 
-        const today = new Date();
-        today.setHours(23, 59, 59, 999);
+        const zNow = DateTime.now().setZone(OPERATIONAL_TIMEZONE);
+        const endOfToday = zNow.endOf('day').toJSDate();
         let fromDate: Date;
         let periodStr: string;
 
         if (period === 'day') {
-          fromDate = new Date(today);
+          fromDate = zNow.startOf('day').toJSDate();
           periodStr = formatDateInTZ(fromDate);
         } else if (period === 'week') {
-          fromDate = new Date(today);
-          fromDate.setUTCDate(fromDate.getUTCDate() - 6); // 7 días incluyendo hoy
-          periodStr = `${formatDateInTZ(fromDate)} to ${formatDateInTZ(today)}`;
+          fromDate = zNow.minus({ days: 6 }).startOf('day').toJSDate();
+          periodStr = `${formatDateInTZ(fromDate)} to ${formatDateInTZ(endOfToday)}`;
         } else {
-          // month
-          fromDate = new Date(today);
-          fromDate.setUTCDate(1);
-          periodStr = `${formatDateInTZ(fromDate)} to ${formatDateInTZ(today)}`;
+          fromDate = zNow.startOf('month').startOf('day').toJSDate();
+          periodStr = `${formatDateInTZ(fromDate)} to ${formatDateInTZ(endOfToday)}`;
         }
 
         const fromStr = formatDateInTZ(fromDate);
-        const toStr = formatDateInTZ(today);
+        const toStr = formatDateInTZ(endOfToday);
 
         try {
           const totalContractorsQuery = `
@@ -1826,7 +1831,7 @@ export class RealtimeMetricsService {
             const activeContractorsQuery = `
           SELECT COUNT(DISTINCT contractor_id) AS active
           FROM contractor_activity_15s
-          WHERE toDate(beat_timestamp, 'America/New_York') = '${fromStr}'
+          WHERE toDate(beat_timestamp, '${OPERATIONAL_TIMEZONE}') = '${fromStr}'
         `;
 
             const activeResult = await this.clickHouseService.query<{
@@ -1882,11 +1887,11 @@ export class RealtimeMetricsService {
         ) dates
         LEFT JOIN (
           SELECT 
-            toDate(beat_timestamp, 'America/New_York') AS activity_day,
+            toDate(beat_timestamp, '${OPERATIONAL_TIMEZONE}') AS activity_day,
             COUNT(DISTINCT contractor_id) AS active_count
           FROM contractor_activity_15s
-          WHERE toDate(beat_timestamp, 'America/New_York') >= '${fromStr}'
-            AND toDate(beat_timestamp, 'America/New_York') <= '${toStr}'
+          WHERE toDate(beat_timestamp, '${OPERATIONAL_TIMEZONE}') >= '${fromStr}'
+            AND toDate(beat_timestamp, '${OPERATIONAL_TIMEZONE}') <= '${toStr}'
           GROUP BY activity_day
         ) activity ON dates.day = activity.activity_day
         ORDER BY day
