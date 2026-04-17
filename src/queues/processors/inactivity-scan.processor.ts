@@ -4,7 +4,9 @@ import { ClientProxy } from '@nestjs/microservices';
 import { lastValueFrom } from 'rxjs';
 
 import { QUEUE_NAMES, QUEUE_CONCURRENCY } from 'config/bullmq.config';
-import { envs, getMessagePattern } from 'config';
+import { DateTime } from 'luxon';
+
+import { envs, getMessagePattern, OPERATIONAL_TIMEZONE } from 'config';
 
 import { RedisService } from '../../redis/redis.service';
 
@@ -199,9 +201,8 @@ export class InactivityScanProcessor extends WorkerHost {
         scheduleMap.set(schedule.contractor_id, schedule);
       });
 
-      // Filtrar por horario laboral
-      const now = new Date();
-      const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+      const zNow = DateTime.now().setZone(OPERATIONAL_TIMEZONE);
+      const currentTime = zNow.toFormat('HH:mm');
 
       return candidates.filter((candidate) => {
         const schedule = scheduleMap.get(candidate.contractor_id);

@@ -1,6 +1,6 @@
 ﻿import { Injectable, Logger } from '@nestjs/common';
 
-import { formatDateInTZ } from 'config';
+import { formatDateInTZ, OPERATIONAL_TIMEZONE } from 'config';
 import { ClickHouseService } from '../../clickhouse/clickhouse.service';
 import {
   AppUsageData,
@@ -110,7 +110,7 @@ export class UsageDataService {
           timestamp
         FROM events_raw
         WHERE contractor_id = '${contractorId}'
-          AND toDate(timestamp, 'America/New_York') = '${workdayStr}'
+          AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') = '${workdayStr}'
           AND JSONHas(payload, 'AppUsage')
           ${agentFilter}
         ORDER BY timestamp
@@ -164,7 +164,7 @@ export class UsageDataService {
           timestamp
         FROM events_raw
         WHERE contractor_id = '${contractorId}'
-          AND toDate(timestamp, 'America/New_York') = '${workdayStr}'
+          AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') = '${workdayStr}'
           AND JSONHas(payload, 'browser')
           ${agentFilter}
         ORDER BY timestamp
@@ -226,8 +226,8 @@ export class UsageDataService {
           timestamp
         FROM events_raw
         WHERE contractor_id = '${contractorId}'
-          AND toDate(timestamp, 'America/New_York') >= '${fromStr}'
-          AND toDate(timestamp, 'America/New_York') <= '${toStr}'
+          AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') >= '${fromStr}'
+          AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') <= '${toStr}'
           AND JSONHas(payload, 'AppUsage')
           ${agentFilter}
         ORDER BY timestamp
@@ -295,8 +295,8 @@ export class UsageDataService {
           timestamp
         FROM events_raw
         WHERE contractor_id = '${contractorId}'
-          AND toDate(timestamp, 'America/New_York') >= '${fromStr}'
-          AND toDate(timestamp, 'America/New_York') <= '${toStr}'
+          AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') >= '${fromStr}'
+          AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') <= '${toStr}'
           AND JSONHas(payload, 'browser')
           ${agentFilter}
         ORDER BY timestamp
@@ -350,8 +350,8 @@ export class UsageDataService {
         ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app_name
         LEFT JOIN apps_dimension d ON d.name = app_name
         WHERE contractor_id = '${contractorId}'
-          AND toDate(timestamp, 'America/New_York') >= '${fromStr}'
-          AND toDate(timestamp, 'America/New_York') <= '${toStr}'
+          AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') >= '${fromStr}'
+          AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') <= '${toStr}'
           AND JSONHas(payload, 'AppUsage')
         GROUP BY app_name
         HAVING seconds > 0
@@ -405,8 +405,8 @@ export class UsageDataService {
         FROM events_raw
         ARRAY JOIN JSONExtractKeys(payload, 'browser') AS domain
         WHERE contractor_id = '${contractorId}'
-          AND toDate(timestamp, 'America/New_York') >= '${fromStr}'
-          AND toDate(timestamp, 'America/New_York') <= '${toStr}'
+          AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') >= '${fromStr}'
+          AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') <= '${toStr}'
           AND JSONHas(payload, 'browser')
         GROUP BY domain
         HAVING seconds > 0
@@ -466,8 +466,8 @@ export class UsageDataService {
         ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app_name
         LEFT JOIN apps_dimension d ON d.name = app_name
         WHERE contractor_id IN (${contractorIdsList})
-          AND toDate(timestamp, 'America/New_York') >= '${fromStr}'
-          AND toDate(timestamp, 'America/New_York') <= '${toStr}'
+          AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') >= '${fromStr}'
+          AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') <= '${toStr}'
           AND JSONHas(payload, 'AppUsage')
         GROUP BY contractor_id, app_name
         HAVING seconds > 0
@@ -542,8 +542,8 @@ export class UsageDataService {
         FROM events_raw
         ARRAY JOIN JSONExtractKeys(payload, 'browser') AS domain
         WHERE contractor_id IN (${contractorIdsList})
-          AND toDate(timestamp, 'America/New_York') >= '${fromStr}'
-          AND toDate(timestamp, 'America/New_York') <= '${toStr}'
+          AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') >= '${fromStr}'
+          AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') <= '${toStr}'
           AND JSONHas(payload, 'browser')
         GROUP BY contractor_id, domain
         HAVING seconds > 0

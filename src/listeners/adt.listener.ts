@@ -1,7 +1,15 @@
 ﻿import { Controller, Logger, Optional } from '@nestjs/common';
 import { MessagePattern, Payload } from '@nestjs/microservices';
 
-import { getMessagePattern, logError, envs, formatDateInTZ } from 'config';
+import {
+  getMessagePattern,
+  logError,
+  envs,
+  formatDateInTZ,
+  parseCalendarDayEnd,
+  parseCalendarDayStart,
+  parseOptionalCalendarDayStart,
+} from 'config';
 
 import { ActivityService } from '../etl/services/activity.service';
 import { AppUsageService } from '../etl/services/app-usage.service';
@@ -387,8 +395,8 @@ export class AdtListener {
       const { contractorId, workday, from, to } = data;
 
       if (from && to) {
-        const fromDate = new Date(from);
-        const toDate = new Date(to);
+        const fromDate = parseCalendarDayStart(from);
+        const toDate = parseCalendarDayEnd(to);
         return await this.realtimeMetricsService.getRealtimeMetricsForDateRange(
           contractorId,
           fromDate,
@@ -396,7 +404,7 @@ export class AdtListener {
         );
       }
 
-      const workdayDate = workday ? new Date(workday) : undefined;
+      const workdayDate = parseOptionalCalendarDayStart(workday);
       return await this.realtimeMetricsService.getRealtimeMetrics(
         contractorId,
         workdayDate,
@@ -455,8 +463,8 @@ export class AdtListener {
       };
 
       if (from && to) {
-        const fromDate = new Date(from);
-        const toDate = new Date(to);
+        const fromDate = parseCalendarDayStart(from);
+        const toDate = parseCalendarDayEnd(to);
         return await this.realtimeMetricsService.getAllRealtimeMetricsByDateRange(
           fromDate,
           toDate,
@@ -464,7 +472,7 @@ export class AdtListener {
         );
       }
 
-      const workdayDate = workday ? new Date(workday) : undefined;
+      const workdayDate = parseOptionalCalendarDayStart(workday);
       return await this.realtimeMetricsService.getAllRealtimeMetrics(
         workdayDate,
         filters,
@@ -542,8 +550,8 @@ export class AdtListener {
 
       // Rango de fechas (from-to)
       if (from && to) {
-        const fromDate = new Date(from);
-        const toDate = new Date(to);
+        const fromDate = parseCalendarDayStart(from);
+        const toDate = parseCalendarDayEnd(to);
 
         // Primero calculamos métricas por agente para saber cuántos agentes hay
         const byAgent =
@@ -654,7 +662,7 @@ export class AdtListener {
       }
 
       // Día específico (o hoy por defecto)
-      const workdayDate = workday ? new Date(workday) : undefined;
+      const workdayDate = parseOptionalCalendarDayStart(workday);
 
       // Métricas por agente para ese día
       const byAgent = await this.realtimeMetricsService.getProductivityByAgent(
@@ -760,8 +768,8 @@ export class AdtListener {
   async processEvents(@Payload() data: { from?: string; to?: string }) {
     try {
       const { from, to } = data;
-      const fromDate = from ? new Date(from) : undefined;
-      const toDate = to ? new Date(to) : undefined;
+      const fromDate = from ? parseCalendarDayStart(from) : undefined;
+      const toDate = to ? parseCalendarDayEnd(to) : undefined;
 
       const count = await this.etlService.processEventsToActivity(
         fromDate,
@@ -785,8 +793,8 @@ export class AdtListener {
   async processEventsForce(@Payload() data: { from?: string; to?: string }) {
     try {
       const { from, to } = data;
-      const fromDate = from ? new Date(from) : undefined;
-      const toDate = to ? new Date(to) : undefined;
+      const fromDate = from ? parseCalendarDayStart(from) : undefined;
+      const toDate = to ? parseCalendarDayEnd(to) : undefined;
 
       const count = await this.etlService.processEventsToActivityForce(
         fromDate,
@@ -816,9 +824,9 @@ export class AdtListener {
   ) {
     try {
       const { workday, from, to } = data;
-      const workdayDate = workday ? new Date(workday) : undefined;
-      const fromDate = from ? new Date(from) : undefined;
-      const toDate = to ? new Date(to) : undefined;
+      const workdayDate = parseOptionalCalendarDayStart(workday);
+      const fromDate = from ? parseCalendarDayStart(from) : undefined;
+      const toDate = to ? parseCalendarDayEnd(to) : undefined;
 
       // Encolar job en BullMQ si la cola ETL está habilitada
       if (envs.queues.useEtlQueue && this.etlQueueService) {

@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { createClient, ClickHouseClient } from '@clickhouse/client';
 
-import { envs } from 'config';
+import { envs, OPERATIONAL_TIMEZONE } from 'config';
 
 @Injectable()
 export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
@@ -194,26 +194,18 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
   ): string | null {
     if (!date) return null;
     if (typeof date === 'string') {
-      // Si ya es un string, intentar parsearlo y formatearlo
       const parsed = new Date(date);
       if (isNaN(parsed.getTime())) return null;
       date = parsed;
     }
     if (!(date instanceof Date) || isNaN(date.getTime())) return null;
 
-    // Formato: YYYY-MM-DD HH:MM:SS (formato DateTime de ClickHouse, en zona horaria local del servidor)
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    const hours = String(date.getHours()).padStart(2, '0');
-    const minutes = String(date.getMinutes()).padStart(2, '0');
-    const seconds = String(date.getSeconds()).padStart(2, '0');
-
-    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+    return date.toISOString().replace('T', ' ').slice(0, 19);
   }
 
   /**
-   * Formatear fecha como solo fecha (sin hora) para campos Date en ClickHouse
+   * Formatear fecha como solo fecha (sin hora) para campos Date en ClickHouse.
+   * Usa OPERATIONAL_TIMEZONE para determinar el día calendario correcto.
    */
   private formatDateOnlyForClickHouse(
     date: Date | string | null | undefined,
@@ -226,12 +218,13 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
     }
     if (!(date instanceof Date) || isNaN(date.getTime())) return null;
 
-    // Formato: YYYY-MM-DD (solo fecha, sin hora, en zona horaria local del servidor)
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-
-    return `${year}-${month}-${day}`;
+    const formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone: OPERATIONAL_TIMEZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    return formatter.format(date);
   }
 
   /**
@@ -497,7 +490,7 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
           payload String,
           created_at DateTime DEFAULT now()
         ) ENGINE = MergeTree()
-        PARTITION BY toDate(timestamp, 'America/New_York')
+        PARTITION BY toDate(timestamp, '${OPERATIONAL_TIMEZONE}')
         ORDER BY (contractor_id, timestamp, event_id)
         TTL timestamp + INTERVAL 365 DAY
       `);
@@ -769,7 +762,7 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
           is_idle UInt8,
           keyboard_count UInt32,
           mouse_clicks UInt32,
-          workday Date DEFAULT toDate(beat_timestamp, 'America/New_York'),
+          workday Date DEFAULT toDate(beat_timestamp, '${OPERATIONAL_TIMEZONE}'),
           created_at DateTime DEFAULT now()
         ) ENGINE = MergeTree()
         PARTITION BY workday

@@ -2,6 +2,7 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 
+import { coerceToOperationalDayStart, jobWorkdayToYmd } from 'config';
 import { QUEUE_NAMES, QUEUE_CONCURRENCY } from 'config/bullmq.config';
 
 import { EtlService } from '../../etl/services/etl.service';
@@ -31,9 +32,7 @@ export class DailyMetricsProcessor extends WorkerHost {
     const startTime = Date.now();
     const { workday, fromDate, toDate, force, contractorIds } = job.data;
 
-    const dayStr = workday
-      ? new Date(workday).toISOString().slice(0, 10)
-      : 'today';
+    const dayStr = jobWorkdayToYmd(workday);
 
     this.logger.log(
       `🚀 [Job ${job.id}] Starting daily metrics ETL for ${dayStr}` +
@@ -46,7 +45,9 @@ export class DailyMetricsProcessor extends WorkerHost {
       await job.updateProgress(10);
 
       // Parsear fechas (llegan serializadas como string desde Redis)
-      const workdayDate = workday ? new Date(workday) : undefined;
+      const workdayDate = workday
+        ? coerceToOperationalDayStart(workday as Date | string)
+        : undefined;
       const from = fromDate ? new Date(fromDate) : undefined;
       const to = toDate ? new Date(toDate) : undefined;
 
@@ -91,9 +92,7 @@ export class DailyMetricsProcessor extends WorkerHost {
 
   async onFailed(job: Job<EtlJobData> | undefined, error: Error) {
     if (job) {
-      const dayStr = job.data.workday
-        ? new Date(job.data.workday).toISOString().slice(0, 10)
-        : 'today';
+      const dayStr = jobWorkdayToYmd(job.data.workday);
       this.logger.error(
         `❌ [Job ${job.id}] Daily metrics ETL for ${dayStr} failed permanently ` +
           `after ${job.attemptsMade} attempts: ${error.message}`,
