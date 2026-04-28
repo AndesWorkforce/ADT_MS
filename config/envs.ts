@@ -112,6 +112,7 @@ const envVars: EnvVars = value;
 /**
  * Zona horaria operativa para interpretar workdays, agrupar métricas por día
  * y generar strings YYYY-MM-DD coherentes con el calendario del cliente.
+ * Debe coincidir con EVENTS_OPERATIONAL_TIMEZONE en EVENTS_MS para una sola semántica de día operativo.
  */
 export const OPERATIONAL_TIMEZONE =
   process.env.EVENTS_TIMEZONE || 'America/New_York';
