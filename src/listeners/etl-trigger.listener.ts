@@ -7,8 +7,7 @@ import { EtlService } from '../etl/services/etl.service';
 import { EtlQueueService } from '../queues/services/etl-queue.service';
 
 /**
- * Payload emitido por EVENTS_MS cuando una sesión finaliza
- * (por timeout de inactividad o fin de turno explícito).
+ * Payload emitido por USER_MS al cerrar la Session padre (`AdtSessionInterceptor`).
  */
 interface SessionEtlTriggerPayload {
   sessionId: string;
@@ -34,8 +33,8 @@ interface SessionEtlTriggerPayload {
  * ✅ Incluye sessionId y contractorId
  * ✅ Logs claros de recepción / éxito / error
  * ✅ Lógica ETL desacoplada de EVENTS_MS (reside solo en ADT_MS)
- * ✅ Cada cierre encola un job distinto (jobId con timestamp) para que varias agent sessions
- *    de la misma sesión principal disparen ETL en cada cierre y no se descarten como duplicados
+ * ✅ Cada cierre de sesión padre en USER_MS emite **un** `etl.session.trigger` (AdtSessionInterceptor).
+ * ✅ BullMQ deduplica por `sessionId` ventana corta por si llegaran disparos duplicados (cola `full-etl-on-close`).
  *
  * Si USE_ETL_QUEUE=false, ejecuta la orquestación de forma inline como fallback
  * para no perder el ETL automático en producción.
