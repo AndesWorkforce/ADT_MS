@@ -72,7 +72,7 @@ export class DimensionsService implements OnModuleInit {
       name: app.name,
       category,
       type,
-      weight: app.weight || 0.5,
+      weight: app.weight || 0.1,
       created_at: app.created_at || new Date(),
       updated_at: new Date(),
     };
@@ -200,8 +200,8 @@ export class DimensionsService implements OnModuleInit {
     if (app && app.weight !== null && app.weight !== undefined) {
       return app.weight;
     }
-    // Default para apps desconocidas
-    return 0.5;
+    // Apps no listadas penalizan el score (no son neutrales)
+    return 0.1;
   }
 
   /**
@@ -221,8 +221,8 @@ export class DimensionsService implements OnModuleInit {
       }
     }
 
-    // Default para dominios desconocidos
-    return 0.5;
+    // Dominios no listados penalizan el score (no son neutrales)
+    return 0.1;
   }
 
   /**
