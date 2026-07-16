@@ -8,10 +8,30 @@ import { DimensionsService } from '../services/dimensions.service';
 /**
  * Interfaces auxiliares para pasar datos de AppUsage y Browser
  */
+export type AppCategory = 'productive' | 'neutral' | 'non_productive';
+
+const VALID_APP_CATEGORIES: readonly AppCategory[] = [
+  'productive',
+  'neutral',
+  'non_productive',
+];
+
+export function normalizeAppCategory(
+  category?: string | null,
+): AppCategory | null {
+  if (!category) {
+    return null;
+  }
+  return VALID_APP_CATEGORIES.includes(category as AppCategory)
+    ? (category as AppCategory)
+    : null;
+}
+
 export interface AppUsageData {
   appName: string;
   seconds: number;
   type?: string; // Tipo de aplicación desde apps_dimension
+  category?: AppCategory | null;
 }
 
 export interface BrowserUsageData {

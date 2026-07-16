@@ -3,8 +3,10 @@
 import { formatDateInTZ, OPERATIONAL_TIMEZONE } from 'config';
 import { ClickHouseService } from '../../clickhouse/clickhouse.service';
 import {
+  AppCategory,
   AppUsageData,
   BrowserUsageData,
+  normalizeAppCategory,
 } from '../transformers/activity-to-daily-metrics.transformer';
 
 /**
@@ -46,19 +48,22 @@ export class UsageDataService {
   }
 
   /**
-   * Obtiene los tipos de aplicaciones desde apps_dimension.
+   * Obtiene tipo y categoría de aplicaciones desde apps_dimension.
    * Método público reutilizable para evitar duplicación de código.
    *
    * @param appNames Array de nombres de aplicaciones
-   * @returns Map con appName -> type
+   * @returns Map con appName -> { type, category }
    */
   async getAppTypesFromDimension(
     appNames: string[],
-  ): Promise<Record<string, string>> {
-    const typeMap: Record<string, string> = {};
+  ): Promise<Record<string, { type?: string; category?: AppCategory | null }>> {
+    const metaMap: Record<
+      string,
+      { type?: string; category?: AppCategory | null }
+    > = {};
 
     if (appNames.length === 0) {
-      return typeMap;
+      return metaMap;
     }
 
     try {
@@ -66,25 +71,29 @@ export class UsageDataService {
         .map((name) => `'${name.replace(/'/g, "''")}'`)
         .join(',');
       const typeQuery = `
-        SELECT name, type
+        SELECT name, type, category
         FROM apps_dimension
         WHERE name IN (${appNamesList})
       `;
       const typeResults = await this.clickHouseService.query<{
         name: string;
-        type: string;
+        type?: string;
+        category?: string | null;
       }>(typeQuery);
 
       typeResults.forEach((row) => {
-        typeMap[row.name] = row.type;
+        metaMap[row.name] = {
+          type: row.type || undefined,
+          category: normalizeAppCategory(row.category),
+        };
       });
     } catch (error) {
       this.logger.warn(
-        `Error getting app types from apps_dimension: ${error.message}. Continuing without types.`,
+        `Error getting app meta from apps_dimension: ${error.message}. Continuing without types/categories.`,
       );
     }
 
-    return typeMap;
+    return metaMap;
   }
 
   /**
@@ -122,15 +131,16 @@ export class UsageDataService {
         'app_usage_json',
       );
 
-      // Obtener tipos desde apps_dimension
+      // Obtener tipos/categorías desde apps_dimension
       const appNames = Object.keys(appUsageMap);
-      const typeMap = await this.getAppTypesFromDimension(appNames);
+      const metaMap = await this.getAppTypesFromDimension(appNames);
 
       return Object.entries(appUsageMap)
         .map(([appName, seconds]) => ({
           appName,
           seconds: seconds < 0 ? 0 : seconds,
-          type: typeMap[appName] || undefined,
+          type: metaMap[appName]?.type || undefined,
+          category: metaMap[appName]?.category ?? null,
         }))
         .filter((u) => u.seconds > 0);
     } catch (error) {
@@ -240,15 +250,16 @@ export class UsageDataService {
         'app_usage_json',
       );
 
-      // Obtener tipos desde apps_dimension
+      // Obtener tipos/categorías desde apps_dimension
       const appNames = Object.keys(appUsageMap);
-      const typeMap = await this.getAppTypesFromDimension(appNames);
+      const metaMap = await this.getAppTypesFromDimension(appNames);
 
       return Object.entries(appUsageMap)
         .map(([appName, seconds]) => ({
           appName,
           seconds: seconds < 0 ? 0 : seconds,
-          type: typeMap[appName] || undefined,
+          type: metaMap[appName]?.type || undefined,
+          category: metaMap[appName]?.category ?? null,
         }))
         .filter((u) => u.seconds > 0);
     } catch (error) {
@@ -345,7 +356,8 @@ export class UsageDataService {
         SELECT 
           app_name AS appName,
           sum(JSONExtractFloat(payload, 'AppUsage', app_name)) AS seconds,
-          any(d.type) AS type
+          any(d.type) AS type,
+          any(d.category) AS category
         FROM events_raw
         ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app_name
         LEFT JOIN apps_dimension d ON d.name = app_name
@@ -362,6 +374,7 @@ export class UsageDataService {
         appName: string;
         seconds: number;
         type?: string;
+        category?: string | null;
       }>(query);
 
       return results.map((r) => {
@@ -370,6 +383,7 @@ export class UsageDataService {
           appName: r.appName,
           seconds: isNaN(seconds) || !isFinite(seconds) ? 0 : seconds,
           type: r.type || undefined,
+          category: normalizeAppCategory(r.category),
         };
       });
     } catch (error) {
@@ -461,7 +475,8 @@ export class UsageDataService {
           contractor_id,
           app_name AS appName,
           sum(JSONExtractFloat(payload, 'AppUsage', app_name)) AS seconds,
-          any(d.type) AS type
+          any(d.type) AS type,
+          any(d.category) AS category
         FROM events_raw
         ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app_name
         LEFT JOIN apps_dimension d ON d.name = app_name
@@ -479,6 +494,7 @@ export class UsageDataService {
         appName: string;
         seconds: number;
         type?: string;
+        category?: string | null;
       }>(query);
 
       // Inicializar Map con arrays vacíos para todos los contractors
@@ -495,6 +511,7 @@ export class UsageDataService {
             appName: row.appName,
             seconds: isNaN(seconds) || !isFinite(seconds) ? 0 : seconds,
             type: row.type || undefined,
+            category: normalizeAppCategory(row.category),
           });
         }
       });

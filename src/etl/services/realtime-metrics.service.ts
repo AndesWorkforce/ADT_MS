@@ -14,7 +14,10 @@ import {
 import { ClickHouseService } from '../../clickhouse/clickhouse.service';
 import { UsageDataService } from './usage-data.service';
 import { ContractorActivity15sDto } from '../dto/contractor-activity-15s.dto';
-import { ActivityToDailyMetricsTransformer } from '../transformers/activity-to-daily-metrics.transformer';
+import {
+  ActivityToDailyMetricsTransformer,
+  normalizeAppCategory,
+} from '../transformers/activity-to-daily-metrics.transformer';
 import type {
   AppUsageData,
   BrowserUsageData,
@@ -202,6 +205,7 @@ export class RealtimeMetricsService {
         appName: a.appName,
         seconds: a.seconds,
         type: a.type,
+        category: a.category ?? null,
       })),
       browser_usage: browserUsage.map((b) => ({
         domain: b.domain,
@@ -367,6 +371,7 @@ export class RealtimeMetricsService {
               appName: a.appName,
               seconds: a.seconds,
               type: a.type,
+              category: a.category ?? null,
             })),
             browser_usage: browserUsage.map((b) => ({
               domain: b.domain,
@@ -422,9 +427,9 @@ export class RealtimeMetricsService {
       seconds: number;
     }>(query);
 
-    // Obtener tipos desde apps_dimension
+    // Obtener tipos/categorías desde apps_dimension
     const appNames = [...new Set(rows.map((r) => r.app))];
-    const typeMap =
+    const metaMap =
       await this.usageDataService.getAppTypesFromDimension(appNames);
 
     const result = new Map<string, AppUsageData[]>();
@@ -435,7 +440,8 @@ export class RealtimeMetricsService {
       result.get(row.agent_id)!.push({
         appName: row.app,
         seconds: Number(row.seconds) || 0,
-        type: typeMap[row.app] || undefined,
+        type: metaMap[row.app]?.type || undefined,
+        category: normalizeAppCategory(metaMap[row.app]?.category),
       });
     }
 
@@ -533,9 +539,9 @@ export class RealtimeMetricsService {
       seconds: number;
     }>(query);
 
-    // Obtener tipos desde apps_dimension
+    // Obtener tipos/categorías desde apps_dimension
     const appNames = [...new Set(rows.map((r) => r.app))];
-    const typeMap =
+    const metaMap =
       await this.usageDataService.getAppTypesFromDimension(appNames);
 
     const result = new Map<string, AppUsageData[]>();
@@ -546,7 +552,8 @@ export class RealtimeMetricsService {
       result.get(row.agent_id)!.push({
         appName: row.app,
         seconds: Number(row.seconds) || 0,
-        type: typeMap[row.app] || undefined,
+        type: metaMap[row.app]?.type || undefined,
+        category: normalizeAppCategory(metaMap[row.app]?.category),
       });
     }
 
@@ -762,6 +769,7 @@ export class RealtimeMetricsService {
               appName: a.appName,
               seconds: a.seconds,
               type: a.type,
+              category: a.category ?? null,
             })),
             browser_usage: browserUsage.map((b) => ({
               domain: b.domain,
@@ -856,17 +864,17 @@ export class RealtimeMetricsService {
     }));
 
     // AppUsage y Browser para todo el contractor en el rango (todos los agentes)
-    const appUsage = await this.usageDataService.getAppUsageForDateRange(
+    // Usar agregación SQL (más fiable en rangos largos que escanear events_raw con LIMIT)
+    const appUsage = await this.usageDataService.getAppUsageAggregated(
       contractorId,
       from,
       to,
     );
-    const browserUsage =
-      await this.usageDataService.getBrowserUsageForDateRange(
-        contractorId,
-        from,
-        to,
-      );
+    const browserUsage = await this.usageDataService.getBrowserUsageAggregated(
+      contractorId,
+      from,
+      to,
+    );
 
     const metrics = this.activityToDailyMetricsTransformer.aggregate(
       contractorId,
@@ -894,6 +902,7 @@ export class RealtimeMetricsService {
         appName: a.appName,
         seconds: a.seconds,
         type: a.type,
+        category: a.category ?? null,
       })),
       browser_usage: browserUsage.map((b) => ({
         domain: b.domain,
@@ -1117,21 +1126,16 @@ export class RealtimeMetricsService {
             workday: workdayStr,
             ...beatMetrics,
             productivity_score,
-            app_usage: appUsage
-              .sort((a, b) => b.seconds - a.seconds)
-              .slice(0, 20)
-              .map((a) => ({
-                appName: a.appName,
-                seconds: Math.round(a.seconds),
-                type: a.type,
-              })),
-            browser_usage: browserUsage
-              .sort((a, b) => b.seconds - a.seconds)
-              .slice(0, 15)
-              .map((b) => ({
-                domain: b.domain,
-                seconds: Math.round(b.seconds),
-              })),
+            app_usage: appUsage.map((a) => ({
+              appName: a.appName,
+              seconds: a.seconds,
+              type: a.type,
+              category: a.category ?? null,
+            })),
+            browser_usage: browserUsage.map((b) => ({
+              domain: b.domain,
+              seconds: b.seconds,
+            })),
             is_realtime: true,
           };
         });
@@ -1322,21 +1326,18 @@ export class RealtimeMetricsService {
         effective_work_seconds: Number(row.effective_work_seconds) || 0,
         productivity_score: Number(row.productivity_score) || 0,
         days_count: Number(row.days_count) || 0,
-        app_usage: appUsage
-          .sort((a, b) => b.seconds - a.seconds)
-          .slice(0, 20)
-          .map((a) => ({
-            appName: a.appName,
-            seconds: Math.round(a.seconds),
-          })),
-        browser_usage: browserUsage
-          .sort((a, b) => b.seconds - a.seconds)
-          .slice(0, 15)
-          .map((b) => ({
-            domain: b.domain,
-            seconds: Math.round(b.seconds),
-          })),
-        is_realtime: false,
+        app_usage: appUsage.map((a) => ({
+          appName: a.appName,
+          seconds: a.seconds,
+          type: a.type,
+          category: a.category ?? null,
+        })),
+        browser_usage: browserUsage.map((b) => ({
+          domain: b.domain,
+          seconds: b.seconds,
+        })),
+        is_realtime: false, // Indica que viene de datos pre-calculados
+        calculated_at: new Date().toISOString(),
       };
     });
 
@@ -1551,6 +1552,7 @@ export class RealtimeMetricsService {
         appName: a.appName,
         seconds: a.seconds,
         type: a.type,
+        category: a.category ?? null,
       })),
       browser_usage: browserUsage.map((b) => ({
         domain: b.domain,

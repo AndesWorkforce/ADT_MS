@@ -64,6 +64,20 @@ export class SessionSummariesService {
     return { effectiveAgentId, agentFilterSql };
   }
 
+  /**
+   * ClickHouse JSONEachRow serializa Int64/UInt64 como string para no perder
+   * precisión en JS. Sin coercionar, `sum + total_seconds` concatena strings.
+   */
+  private normalizeSessionSummary(row: SessionSummaryDto): SessionSummaryDto {
+    return {
+      ...row,
+      total_seconds: Number(row.total_seconds) || 0,
+      active_seconds: Number(row.active_seconds) || 0,
+      idle_seconds: Number(row.idle_seconds) || 0,
+      productivity_score: Number(row.productivity_score) || 0,
+    };
+  }
+
   private buildAgentViewQuery(
     contractorId: string,
     dateFilter: string,
@@ -207,7 +221,9 @@ export class SessionSummariesService {
           ? this.buildAgentViewQuery(contractorId, dateFilter, agentFilterSql)
           : this.buildConsolidatedViewQuery(contractorId, dateFilter);
 
-        return await this.clickHouseService.query<SessionSummaryDto>(query);
+        const rows =
+          await this.clickHouseService.query<SessionSummaryDto>(query);
+        return rows.map((row) => this.normalizeSessionSummary(row));
       },
       envs.redis.ttl,
     );
@@ -245,8 +261,9 @@ export class SessionSummariesService {
           ? this.buildAgentViewQuery(contractorId, dateFilter, agentFilterSql)
           : this.buildConsolidatedViewQuery(contractorId, dateFilter);
 
-        const sessions =
-          await this.clickHouseService.query<SessionSummaryDto>(query);
+        const sessions = (
+          await this.clickHouseService.query<SessionSummaryDto>(query)
+        ).map((row) => this.normalizeSessionSummary(row));
 
         const groupedByDay = new Map<string, SessionSummaryDto[]>();
         sessions.forEach((session) => {
@@ -279,8 +296,8 @@ export class SessionSummariesService {
    * @param from Fecha de inicio (opcional)
    * @param to Fecha de fin (opcional)
    * @param days Días hacia atrás (default: 30)
-   * @param startHour Hora de inicio de jornada (default: 8)
-   * @param endHour Hora de fin de jornada (default: 17)
+   * @param startHour Hora de inicio de jornada (default: 7)
+   * @param endHour Hora de fin de jornada (default: 19)
    * @returns Array de objetos con promedios por hora
    */
   /**
@@ -299,8 +316,8 @@ export class SessionSummariesService {
    * @param from Fecha de inicio (opcional)
    * @param to Fecha de fin (opcional)
    * @param days Días hacia atrás (default: 30)
-   * @param startHour Hora de inicio de jornada (default: 8)
-   * @param endHour Hora de fin de jornada (default: 17)
+   * @param startHour Hora de inicio de jornada (default: 7)
+   * @param endHour Hora de fin de jornada (default: 19)
    * @param agentId Si se informa, solo sesiones de ese agente; si no, consolidado (merge de intervalos de todos los agentes).
    * @returns Array de objetos con duración de sesiones por hora
    */
@@ -309,8 +326,8 @@ export class SessionSummariesService {
     from?: string,
     to?: string,
     days: number = 30,
-    startHour: number = 8,
-    endHour: number = 17,
+    startHour: number = 7,
+    endHour: number = 19,
     agentId?: string,
   ): Promise<
     Array<{
@@ -486,8 +503,8 @@ export class SessionSummariesService {
     from?: string,
     to?: string,
     days: number = 30,
-    startHour: number = 8,
-    endHour: number = 17,
+    startHour: number = 7,
+    endHour: number = 19,
   ): Promise<
     Array<{
       hour: number;
@@ -606,8 +623,8 @@ export class SessionSummariesService {
    * @param from Fecha de inicio (opcional)
    * @param to Fecha de fin (opcional)
    * @param days Días hacia atrás (default: 30)
-   * @param startHour Hora de inicio de jornada (default: 8)
-   * @param endHour Hora de fin de jornada (default: 17)
+   * @param startHour Hora de inicio de jornada (default: 7)
+   * @param endHour Hora de fin de jornada (default: 19)
    * @param agentId ID del agente (opcional). Si se indica, solo se consideran beats y eventos de ese agente.
    * @returns Array de objetos con % de productividad promedio por hora
    */
@@ -616,8 +633,8 @@ export class SessionSummariesService {
     from?: string,
     to?: string,
     days: number = 30,
-    startHour: number = 8,
-    endHour: number = 17,
+    startHour: number = 7,
+    endHour: number = 19,
     agentId?: string,
   ): Promise<
     Array<{
