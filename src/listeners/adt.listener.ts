@@ -16,6 +16,7 @@ import { AppUsageService } from '../etl/services/app-usage.service';
 import { AppsSyncService } from '../etl/services/apps-sync.service';
 import { DailyMetricsService } from '../etl/services/daily-metrics.service';
 import { AppType } from '../etl/dto/app-dimension.dto';
+import { DimensionsService } from '../etl/services/dimensions.service';
 import { EtlService } from '../etl/services/etl.service';
 import { RankingService } from '../etl/services/ranking.service';
 import { RealtimeMetricsService } from '../etl/services/realtime-metrics.service';
@@ -50,6 +51,8 @@ export class AdtListener {
     private readonly etlService: EtlService,
     // Servicios de sincronización
     private readonly appsSyncService: AppsSyncService,
+    // Caché en memoria de pesos de apps/dominios
+    private readonly dimensionsService: DimensionsService,
     // Servicio de cola ETL (opcional, solo disponible si USE_ETL_QUEUE=true)
     @Optional() private readonly etlQueueService?: EtlQueueService,
   ) {}
@@ -952,6 +955,7 @@ export class AdtListener {
   ) {
     try {
       await this.appsSyncService.syncApp(app);
+      await this.dimensionsService.reload();
       return {
         message: 'App synchronized successfully',
         appId: app.id,
@@ -969,6 +973,7 @@ export class AdtListener {
   async deleteApp(@Payload() appId: string) {
     try {
       await this.appsSyncService.deleteApp(appId);
+      await this.dimensionsService.reload();
       return {
         message: 'App deleted successfully',
         appId,
@@ -998,6 +1003,7 @@ export class AdtListener {
   ) {
     try {
       await this.appsSyncService.syncAllApps(apps);
+      await this.dimensionsService.reload();
       return {
         message: 'All apps synchronized successfully',
         count: apps.length,

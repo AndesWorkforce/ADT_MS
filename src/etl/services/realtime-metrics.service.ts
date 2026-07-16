@@ -1137,7 +1137,6 @@ export class RealtimeMetricsService {
               seconds: b.seconds,
             })),
             is_realtime: true,
-            calculated_at: new Date().toISOString(),
           };
         });
 

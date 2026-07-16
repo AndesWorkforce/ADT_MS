@@ -15,67 +15,77 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
   private readonly verifiedTables = new Set<string>();
 
   async onModuleInit() {
-    try {
-      // Primero, crear un cliente temporal sin base de datos para asegurar que la base de datos existe
-      const tempClient = createClient({
-        host: `http://${envs.clickhouse.host}:${envs.clickhouse.port}`,
-        username: envs.clickhouse.username,
-        password: envs.clickhouse.password,
-        // No se especificó base de datos - la crearemos primero
-      });
+    await this.connectWithRetry();
+  }
 
-      // Probar conexión
-      await tempClient.ping();
-      this.logger.log(
-        `✅ ClickHouse connected: ${envs.clickhouse.host}:${envs.clickhouse.port}`,
-      );
-
-      // Asegurar que la base de datos existe (usando cliente temporal sin base de datos)
-      await this.ensureDatabase(tempClient);
-
-      // Ahora crear el cliente principal con la base de datos
-      // Configurar timeouts más largos para queries complejas
-      this.client = createClient({
-        host: `http://${envs.clickhouse.host}:${envs.clickhouse.port}`,
-        username: envs.clickhouse.username,
-        password: envs.clickhouse.password,
-        database: envs.clickhouse.database,
-        request_timeout: 300000, // 5 minutos para queries complejas
-        max_open_connections: 10, // Limitar conexiones simultáneas
-      });
-
-      // Probar conexión con la base de datos
-      await this.client.ping();
-      this.logger.log(
-        `✅ ClickHouse connected to database: ${envs.clickhouse.database}`,
-      );
-
-      // Asegurar que las tablas RAW existen
-      await this.ensureRawTables();
-
-      // Asegurar que las tablas de dimensiones existen
-      await this.ensureDimensionsTables();
-
-      // Asegurar que las tablas ADT existen
-      await this.ensureAdtTables();
-
-      // Pre-cachear las tablas RAW que acabamos de crear/verificar
-      this.verifiedTables.add('events_raw');
-      this.verifiedTables.add('sessions_raw');
-      this.verifiedTables.add('agent_sessions_raw');
-      this.verifiedTables.add('contractor_info_raw');
-      this.verifiedTables.add('apps_dimension');
-      this.verifiedTables.add('domains_dimension');
-      this.verifiedTables.add('contractor_activity_15s');
-      this.verifiedTables.add('contractor_daily_metrics');
-      this.verifiedTables.add('session_summary');
-
-      // Cerrar cliente temporal
-      await tempClient.close();
-    } catch (error) {
-      this.logger.error('Failed to connect to ClickHouse', error);
-      throw error;
+  private async connectWithRetry(
+    maxAttempts = 5,
+    delayMs = 5000,
+  ): Promise<void> {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        await this.initializeConnection();
+        return;
+      } catch (error) {
+        const isLast = attempt === maxAttempts;
+        this.logger.error(
+          `Failed to connect to ClickHouse (attempt ${attempt}/${maxAttempts}): ${error instanceof Error ? error.message : String(error)}`,
+        );
+        if (isLast) {
+          this.logger.error(
+            'All ClickHouse connection attempts exhausted. Service will start but queries will fail until ClickHouse is reachable.',
+          );
+          return;
+        }
+        this.logger.warn(`Retrying in ${delayMs / 1000}s...`);
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
     }
+  }
+
+  private async initializeConnection(): Promise<void> {
+    const tempClient = createClient({
+      host: `http://${envs.clickhouse.host}:${envs.clickhouse.port}`,
+      username: envs.clickhouse.username,
+      password: envs.clickhouse.password,
+    });
+
+    await tempClient.ping();
+    this.logger.log(
+      `✅ ClickHouse connected: ${envs.clickhouse.host}:${envs.clickhouse.port}`,
+    );
+
+    await this.ensureDatabase(tempClient);
+
+    this.client = createClient({
+      host: `http://${envs.clickhouse.host}:${envs.clickhouse.port}`,
+      username: envs.clickhouse.username,
+      password: envs.clickhouse.password,
+      database: envs.clickhouse.database,
+      request_timeout: 300000,
+      max_open_connections: 10,
+    });
+
+    await this.client.ping();
+    this.logger.log(
+      `✅ ClickHouse connected to database: ${envs.clickhouse.database}`,
+    );
+
+    await this.ensureRawTables();
+    await this.ensureDimensionsTables();
+    await this.ensureAdtTables();
+
+    this.verifiedTables.add('events_raw');
+    this.verifiedTables.add('sessions_raw');
+    this.verifiedTables.add('agent_sessions_raw');
+    this.verifiedTables.add('contractor_info_raw');
+    this.verifiedTables.add('apps_dimension');
+    this.verifiedTables.add('domains_dimension');
+    this.verifiedTables.add('contractor_activity_15s');
+    this.verifiedTables.add('contractor_daily_metrics');
+    this.verifiedTables.add('session_summary');
+
+    await tempClient.close();
   }
 
   async onModuleDestroy() {

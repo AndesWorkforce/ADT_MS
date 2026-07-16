@@ -156,9 +156,10 @@ export class EtlQueueService {
 
   /**
    * Encola un job que ejecuta la orquestadora completa para un contratista al cerrar sesión.
-   * Cada cierre de sesión (cada trigger) crea un job nuevo: si usáramos solo sessionId como jobId,
-   * BullMQ ignoraría los duplicados y solo se ejecutaría el ETL una vez por sesión; al tener varias
-   * agent sessions en la misma sesión principal, los cierres posteriores no generarían nuevo ETL.
+   *
+   * Dedupe (BullMQ): varios `etl.session.trigger` seguidos por el mismo cierre (p. ej. agent session +
+   * session padre) solo deben producir un job en ventana corta; `deduplication` evita encolar el mismo
+   * sessionId repetidas veces sin bloquear un segundo cierre real tras varios minutos (TTL).
    *
    * @param sessionId - ID de la sesión cerrada
    * @param contractorId - ID del contratista
@@ -185,6 +186,10 @@ export class EtlQueueService {
           ...DEFAULT_JOB_OPTIONS,
           jobId,
           priority: JobPriority.NORMAL,
+          deduplication: {
+            id: `full-etl-on-close:${sessionId}`,
+            ttl: 60_000,
+          },
         },
       );
 
