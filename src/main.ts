@@ -7,6 +7,23 @@ import { envs, getLogModeMessage, resolveLogLevels } from 'config';
 import { AppModule } from './app.module';
 import { RpcExceptionFilter } from './common/filters/rpc-exception.filter';
 
+const globalLogger = new Logger('Process');
+
+process.on('uncaughtException', (error: Error) => {
+  globalLogger.error(
+    `Uncaught Exception — process will continue. Error: ${error.message}`,
+    error.stack,
+  );
+});
+
+process.on('unhandledRejection', (reason: unknown) => {
+  const message = reason instanceof Error ? reason.message : String(reason);
+  globalLogger.error(
+    `Unhandled Rejection — process will continue. Reason: ${message}`,
+    reason instanceof Error ? reason.stack : undefined,
+  );
+});
+
 async function bootstrap() {
   const logLevels = resolveLogLevels();
   Logger.overrideLogger(logLevels);

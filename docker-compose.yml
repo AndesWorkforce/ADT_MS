@@ -22,37 +22,49 @@ services:
           - node.role == manager
       restart_policy:
         condition: on-failure
-        delay: 5s
-        max_attempts: 3
+        delay: 10s
+        max_attempts: 5
+        window: 120s
       update_config:
         parallelism: 1
         delay: 10s
         order: start-first
-      # Límites PROD (tabla interna: API NestJS)
       resources:
         limits:
-          cpus: '1.0'
-          memory: 1G
+          cpus: '1.5'
+          memory: 2G
         reservations:
-          cpus: '0.2'
-          memory: 256M
+          cpus: '0.3'
+          memory: 512M
     environment:
       NODE_ENV: production
       TZ: 'America/New_York'
       EVENTS_TIMEZONE: 'America/New_York'
+      NODE_OPTIONS: '--max-old-space-size=1536'
       PORT: '${PORT:-3005}'
       DATABASE_URL: '${DATABASE_URL}'
       NATS_HOST: '${NATS_HOST:-72.61.129.234}'
       NATS_PORT: '${NATS_PORT:-4222}'
       NATS_USERNAME: '${NATS_USERNAME:-andes_nats}'
       NATS_PASSWORD: '${NATS_PASSWORD:-andesworkforce_nats}'
+      CLICKHOUSE_HOST: '${CLICKHOUSE_HOST}'
+      CLICKHOUSE_PORT: '${CLICKHOUSE_PORT:-8123}'
+      CLICKHOUSE_USERNAME: '${CLICKHOUSE_USERNAME}'
+      CLICKHOUSE_PASSWORD: '${CLICKHOUSE_PASSWORD}'
+      CLICKHOUSE_DATABASE: '${CLICKHOUSE_DATABASE:-pulse_analytics}'
       REDIS_HOST: '${REDIS_HOST}'
       REDIS_PORT: '${REDIS_PORT:-6379}'
       REDIS_PASSWORD: '${REDIS_PASSWORD:-}'
       REDIS_DB: '${REDIS_DB:-0}'
       REDIS_QUEUE_DB: '${REDIS_QUEUE_DB:-1}'
-      USE_ETL_QUEUE: '${USE_ETL_QUEUE:-true}'
-      DEV_LOGS: '${DEV_LOGS:-true}'
+      USE_EVENT_QUEUE: '${USE_EVENT_QUEUE:-true}'
+      USE_SESSION_QUEUE: '${USE_SESSION_QUEUE:-false}'
+      USE_CONTRACTOR_QUEUE: '${USE_CONTRACTOR_QUEUE:-false}'
+      USE_ETL_QUEUE: '${USE_ETL_QUEUE:-false}'
+      USE_INACTIVITY_ALERTS: '${USE_INACTIVITY_ALERTS:-true}'
+      INACTIVITY_THRESHOLD_MINUTES: '${INACTIVITY_THRESHOLD_MINUTES:-5}'
+      INACTIVITY_SCAN_INTERVAL_MINUTES: '${INACTIVITY_SCAN_INTERVAL_MINUTES:-10}'
+      DEV_LOGS: '${DEV_LOGS:-false}'
       ENVIRONMENT: '${ENVIRONMENT:-production}'
 
 networks:
