@@ -156,8 +156,8 @@ export class AdtListener {
         from,
         to,
         days = 30,
-        startHour = 8,
-        endHour = 17,
+        startHour = 7,
+        endHour = 19,
       } = data;
       return await this.sessionSummariesService.getHourlyActivity(
         contractorId,
@@ -197,8 +197,8 @@ export class AdtListener {
         from,
         to,
         days = 30,
-        startHour = 8,
-        endHour = 17,
+        startHour = 7,
+        endHour = 19,
         agentId,
       } = data;
       return await this.sessionSummariesService.getHourlySessionDuration(
@@ -239,8 +239,8 @@ export class AdtListener {
         from,
         to,
         days = 30,
-        startHour = 8,
-        endHour = 17,
+        startHour = 7,
+        endHour = 19,
         agentId,
       } = data;
       return await this.sessionSummariesService.getHourlyProductivity(
