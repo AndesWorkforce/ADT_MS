@@ -60,7 +60,7 @@ export class AppsSyncService {
           category: app.category || null,
           type: app.type || null,
           weight:
-            app.weight !== null && app.weight !== undefined ? app.weight : 0.5,
+            app.weight !== null && app.weight !== undefined ? app.weight : 0.1,
           created_at: createdAt,
           updated_at: updatedAt,
         },
