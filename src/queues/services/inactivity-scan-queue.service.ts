@@ -16,10 +16,16 @@ export class InactivityScanQueueService implements OnModuleInit {
 
   async onModuleInit() {
     if (envs.queues.useInactivityAlerts) {
-      await this.startPeriodicScan();
-      this.logger.log(
-        `✅ Inactivity scan job registered (interval: ${envs.queues.inactivityScanIntervalMinutes} minutes)`,
-      );
+      try {
+        await this.startPeriodicScan();
+        this.logger.log(
+          `✅ Inactivity scan job registered (interval: ${envs.queues.inactivityScanIntervalMinutes} minutes)`,
+        );
+      } catch (error) {
+        this.logger.error(
+          `❌ Failed to register inactivity scan job. Service will continue without periodic scanning. Error: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
   }
 

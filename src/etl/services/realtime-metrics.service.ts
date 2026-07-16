@@ -1117,17 +1117,22 @@ export class RealtimeMetricsService {
             workday: workdayStr,
             ...beatMetrics,
             productivity_score,
-            app_usage: appUsage.map((a) => ({
-              appName: a.appName,
-              seconds: a.seconds,
-              type: a.type,
-            })),
-            browser_usage: browserUsage.map((b) => ({
-              domain: b.domain,
-              seconds: b.seconds,
-            })),
+            app_usage: appUsage
+              .sort((a, b) => b.seconds - a.seconds)
+              .slice(0, 20)
+              .map((a) => ({
+                appName: a.appName,
+                seconds: Math.round(a.seconds),
+                type: a.type,
+              })),
+            browser_usage: browserUsage
+              .sort((a, b) => b.seconds - a.seconds)
+              .slice(0, 15)
+              .map((b) => ({
+                domain: b.domain,
+                seconds: Math.round(b.seconds),
+              })),
             is_realtime: true,
-            calculated_at: new Date().toISOString(),
           };
         });
 
@@ -1317,16 +1322,21 @@ export class RealtimeMetricsService {
         effective_work_seconds: Number(row.effective_work_seconds) || 0,
         productivity_score: Number(row.productivity_score) || 0,
         days_count: Number(row.days_count) || 0,
-        app_usage: appUsage.map((a) => ({
-          appName: a.appName,
-          seconds: a.seconds,
-        })),
-        browser_usage: browserUsage.map((b) => ({
-          domain: b.domain,
-          seconds: b.seconds,
-        })),
-        is_realtime: false, // Indica que viene de datos pre-calculados
-        calculated_at: new Date().toISOString(),
+        app_usage: appUsage
+          .sort((a, b) => b.seconds - a.seconds)
+          .slice(0, 20)
+          .map((a) => ({
+            appName: a.appName,
+            seconds: Math.round(a.seconds),
+          })),
+        browser_usage: browserUsage
+          .sort((a, b) => b.seconds - a.seconds)
+          .slice(0, 15)
+          .map((b) => ({
+            domain: b.domain,
+            seconds: Math.round(b.seconds),
+          })),
+        is_realtime: false,
       };
     });
 
