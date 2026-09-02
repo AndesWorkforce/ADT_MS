@@ -646,9 +646,6 @@ export class SessionSummariesService {
       days_with_data: number;
       avg_productivity_score: number;
       avg_active_percentage: number;
-      avg_keyboard_mouse_score: number;
-      avg_app_score: number;
-      avg_browser_score: number;
     }>
   > {
     const effectiveAgentId =
@@ -687,12 +684,13 @@ export class SessionSummariesService {
         // que cruzaría límites de hora); es una vista secundaria, no la métrica oficial.
         const activePercentExpr =
           '100.0 * b.active_beats / nullIf(b.total_beats, 0)';
-        const keyboardMouseExpr =
-          'least(100.0, 15.0 * ln(1 + (((b.total_keyboard_inputs + b.total_mouse_clicks) / nullIf(b.total_beats * 15 / 60, 0)) / 2.0)))';
-        const appScoreExpr =
-          'ifNull(100.0 * (app.weighted_seconds / nullIf(app.total_seconds, 0)), 0.0)';
-        const browserScoreExpr =
-          'ifNull(100.0 * (web.weighted_seconds / nullIf(web.total_seconds, 0)), 0.0)';
+        // Se eliminaron keyboardMouseExpr / appScoreExpr / browserScoreExpr:
+        // eran los sub-scores de la formula vieja de 4 factores, que la Fase 3
+        // reemplazo por productivity_score = S_active * S_quality / 100. Ademas
+        // de estar obsoletos, el de teclado/mouse asumia beats de 15 s fijos
+        // (`b.total_beats * 15 / 60` para pasar a minutos) cuando beat_duration
+        // es tiempo transcurrido real: medido, p90 de 26.6 s. Se calculaban en
+        // cada consulta horaria y viajaban al frontend, que no los dibujaba.
         const productivityExpr = this.productivityScoreService.buildScoreSql({
           activeBeats: 'b.active_beats',
           totalBeats: 'b.total_beats',
@@ -707,18 +705,12 @@ export class SessionSummariesService {
             hour,
             uniqExact(workday) AS days_with_data,
             round(avg(productivity_score), 2) AS avg_productivity_score,
-            round(avg(active_percentage), 2) AS avg_active_percentage,
-            round(avg(keyboard_mouse_score), 2) AS avg_keyboard_mouse_score,
-            round(avg(app_score), 2) AS avg_app_score,
-            round(avg(browser_score), 2) AS avg_browser_score
+            round(avg(active_percentage), 2) AS avg_active_percentage
           FROM (
             SELECT
               b.workday AS workday,
               b.hour AS hour,
               ${activePercentExpr} AS active_percentage,
-              ${keyboardMouseExpr} AS keyboard_mouse_score,
-              ${appScoreExpr} AS app_score,
-              ${browserScoreExpr} AS browser_score,
               ${productivityExpr} AS productivity_score
             FROM (
               SELECT
@@ -786,9 +778,6 @@ export class SessionSummariesService {
           days_with_data: number;
           avg_productivity_score: number;
           avg_active_percentage: number;
-          avg_keyboard_mouse_score: number;
-          avg_app_score: number;
-          avg_browser_score: number;
         }>;
 
         const hourlyData: Array<{
@@ -797,9 +786,6 @@ export class SessionSummariesService {
           days_with_data: number;
           avg_productivity_score: number;
           avg_active_percentage: number;
-          avg_keyboard_mouse_score: number;
-          avg_app_score: number;
-          avg_browser_score: number;
         }> = [];
 
         for (let h = startHour; h < endHour; h++) {
@@ -813,13 +799,6 @@ export class SessionSummariesService {
               : 0,
             avg_active_percentage: existing
               ? Number(existing.avg_active_percentage)
-              : 0,
-            avg_keyboard_mouse_score: existing
-              ? Number(existing.avg_keyboard_mouse_score)
-              : 0,
-            avg_app_score: existing ? Number(existing.avg_app_score) : 0,
-            avg_browser_score: existing
-              ? Number(existing.avg_browser_score)
               : 0,
           });
         }
