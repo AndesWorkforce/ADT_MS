@@ -437,32 +437,35 @@ export class SessionSummariesService {
           intervals.sort((a, b) => a.start.getTime() - b.start.getTime());
 
           for (let h = startHour; h <= endHour; h++) {
-            // Límites de hora en OPERATIONAL_TIMEZONE (alineado con toHour(toTimeZone(...)) en otras queries)
-            const hourPrev = wallTimeToUtcInOperationalZone(day, h - 1, 0, 0);
-            const hourCurrent = wallTimeToUtcInOperationalZone(day, h, 0, 0);
+            // Ventana [h, h+1) en OPERATIONAL_TIMEZONE, alineada con
+            // toHour(toTimeZone(...)) del resto de las queries.
+            const hourStart = wallTimeToUtcInOperationalZone(day, h, 0, 0);
+            const hourEnd = wallTimeToUtcInOperationalZone(day, h + 1, 0, 0);
 
-            // Buscar sesiones que:
-            // 1. NO habían terminado para la hora anterior (session_end > hourPrev)
-            // 2. Empezaron ANTES de la hora actual (session_start < hourCurrent)
+            // Sesiones que se solapan con esta hora.
             const activeSessions = intervals.filter(
-              (s) => s.end > hourPrev && s.start < hourCurrent,
+              (s) => s.end > hourStart && s.start < hourEnd,
             );
 
+            // Tiempo monitoreado DENTRO de esta hora: cada sesion aporta solo la
+            // parte de su intervalo que cae en [h, h+1).
+            //
+            // Antes se sumaba desde el INICIO de la sesion hasta el fin de la
+            // hora, o sea un acumulado desde que arranco la sesion. Eso hacia
+            // que el valor creciera mientras la sesion siguiera abierta y podia
+            // superar los 3600 s de una hora (medido: 5885 s en una hora). El
+            // frontend intentaba corregirlo restando la hora anterior, pero la
+            // serie no es monotona —cae cuando una sesion termina y arranca otra
+            // mas corta— y con `Math.max(0, ...)` esas horas quedaban en cero:
+            // sobre datos reales se perdian 4 de las 8 horas con datos.
             let durationSeconds = 0;
-
-            if (activeSessions.length > 0) {
-              // Calcular el tiempo total de todas las sesiones activas
-              for (const session of activeSessions) {
-                // El tiempo que contribuye esta sesión es:
-                // desde su inicio hasta min(su fin, la hora actual)
-                const effectiveEnd =
-                  session.end < hourCurrent ? session.end : hourCurrent;
-                const sessionDuration =
-                  (effectiveEnd.getTime() - session.start.getTime()) / 1000;
-                durationSeconds += sessionDuration;
-              }
+            for (const session of activeSessions) {
+              const overlapStart =
+                session.start > hourStart ? session.start : hourStart;
+              const overlapEnd = session.end < hourEnd ? session.end : hourEnd;
+              durationSeconds +=
+                (overlapEnd.getTime() - overlapStart.getTime()) / 1000;
             }
-            // Si no hay sesiones activas, durationSeconds queda en 0
 
             if (!hourlyByDay.has(h)) {
               hourlyByDay.set(h, []);
