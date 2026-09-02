@@ -95,6 +95,100 @@ export function parseCalendarDayEnd(input: string): Date {
     .toJSDate();
 }
 
+/**
+ * Selector de período para reprocesos/backfills.
+ * Se resuelve exactamente uno, en este orden de precedencia: day > month > year > from/to.
+ */
+export interface PeriodSelector {
+  /** Día exacto: 'YYYY-MM-DD'. */
+  day?: string;
+  /** Mes completo: 'YYYY-MM'. */
+  month?: string;
+  /** Año completo: 'YYYY' (o number). */
+  year?: string | number;
+  /** Rango explícito (inclusivo en ambos extremos): 'YYYY-MM-DD'. */
+  from?: string;
+  to?: string;
+}
+
+/**
+ * Resuelve un PeriodSelector a un rango [from, to] en OPERATIONAL_TIMEZONE.
+ *
+ * Permite pedir un reproceso por día, mes o año sin que el caller tenga que calcular
+ * los bordes (fin de mes, años bisiestos, etc.).
+ *
+ * @throws si no se especifica ningún selector, o si el rango está invertido.
+ */
+export function resolvePeriodRange(selector: PeriodSelector): {
+  from: Date;
+  to: Date;
+  label: string;
+} {
+  const { day, month, year, from, to } = selector;
+
+  if (day) {
+    return {
+      from: parseCalendarDayStart(day),
+      to: parseCalendarDayEnd(day),
+      label: `day ${String(day).trim().split('T')[0]}`,
+    };
+  }
+
+  if (month) {
+    const m = String(month).trim();
+    if (!/^\d{4}-\d{2}$/.test(m)) {
+      throw new Error(`Invalid month (YYYY-MM): ${month}`);
+    }
+    const start = DateTime.fromISO(m, { zone: OPERATIONAL_TIMEZONE });
+    if (!start.isValid) {
+      throw new Error(`Invalid month (YYYY-MM): ${month}`);
+    }
+    return {
+      from: start.startOf('month').toJSDate(),
+      to: start.endOf('month').toJSDate(),
+      label: `month ${m}`,
+    };
+  }
+
+  if (year !== undefined && year !== null && String(year).trim() !== '') {
+    const y = String(year).trim();
+    if (!/^\d{4}$/.test(y)) {
+      throw new Error(`Invalid year (YYYY): ${year}`);
+    }
+    const start = DateTime.fromObject(
+      { year: Number(y) },
+      { zone: OPERATIONAL_TIMEZONE },
+    );
+    return {
+      from: start.startOf('year').toJSDate(),
+      to: start.endOf('year').toJSDate(),
+      label: `year ${y}`,
+    };
+  }
+
+  if (from || to) {
+    // Un extremo faltante colapsa el rango al otro extremo (un solo día).
+    const fromStr = (from ?? to)!;
+    const toStr = (to ?? from)!;
+    const fromDate = parseCalendarDayStart(fromStr);
+    const toDate = parseCalendarDayEnd(toStr);
+    if (fromDate > toDate) {
+      throw new Error(
+        `Invalid range: 'from' (${fromStr}) is after 'to' (${toStr})`,
+      );
+    }
+    return {
+      from: fromDate,
+      to: toDate,
+      label: `range ${String(fromStr).split('T')[0]}..${String(toStr).split('T')[0]}`,
+    };
+  }
+
+  throw new Error(
+    "A period is required: pass one of 'day' (YYYY-MM-DD), 'month' (YYYY-MM), 'year' (YYYY), or 'from'/'to'",
+  );
+}
+
 export function parseOptionalCalendarDayStart(
   input?: string | null,
 ): Date | undefined {

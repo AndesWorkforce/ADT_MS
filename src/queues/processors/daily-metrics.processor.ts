@@ -53,12 +53,15 @@ export class DailyMetricsProcessor extends WorkerHost {
 
       await job.updateProgress(30);
 
-      // Delegar al ETL service (ya maneja idempotencia internamente)
+      // Delegar al ETL service (ya maneja idempotencia internamente).
+      // `force` propaga el recálculo destructivo: sin él, el service saltea los días
+      // ya poblados y el job termina "ok" sin haber recalculado nada.
       const metrics = await this.etlService.processActivityToDailyMetrics(
         workdayDate,
         from,
         to,
         contractorIds,
+        force,
       );
 
       await job.updateProgress(100);

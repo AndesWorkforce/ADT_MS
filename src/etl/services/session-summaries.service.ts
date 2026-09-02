@@ -10,6 +10,8 @@ import {
 import { ClickHouseService } from '../../clickhouse/clickhouse.service';
 import { RedisKeys, RedisService } from '../../redis';
 import { SessionSummaryDto } from '../dto/session-summary.dto';
+import { appUsageMapSql, domainUsageMapSql } from './payload-sql.util';
+import { ProductivityScoreService } from './productivity-score.service';
 
 /**
  * Tipo de agrupación para métricas de sesión
@@ -37,6 +39,7 @@ export class SessionSummariesService {
   constructor(
     private readonly clickHouseService: ClickHouseService,
     private readonly redisService: RedisService,
+    private readonly productivityScoreService: ProductivityScoreService,
   ) {}
 
   private buildDateFilter(
@@ -678,14 +681,26 @@ export class SessionSummariesService {
           ? ` AND agent_id = '${effectiveAgentId}'`
           : '';
 
+        // active_percentage y sub-scores informativos (para el chart).
+        // El productivity_score usa la fórmula multiplicativa unificada (ProductivityScoreService).
+        // Nota: el chart horario aproxima "activo" por hora (sin el grace period de 2 min,
+        // que cruzaría límites de hora); es una vista secundaria, no la métrica oficial.
         const activePercentExpr =
           '100.0 * b.active_beats / nullIf(b.total_beats, 0)';
         const keyboardMouseExpr =
           'least(100.0, 15.0 * ln(1 + (((b.total_keyboard_inputs + b.total_mouse_clicks) / nullIf(b.total_beats * 15 / 60, 0)) / 2.0)))';
         const appScoreExpr =
-          'ifNull(100.0 * greatest(0.0, least(1.0, ((app.weighted_seconds / nullIf(app.total_seconds, 0)) - 0.2) / 0.8)), 50.0)';
+          'ifNull(100.0 * (app.weighted_seconds / nullIf(app.total_seconds, 0)), 0.0)';
         const browserScoreExpr =
-          'ifNull(100.0 * greatest(0.0, least(1.0, ((web.weighted_seconds / nullIf(web.total_seconds, 0)) - 0.2) / 0.8)), 50.0)';
+          'ifNull(100.0 * (web.weighted_seconds / nullIf(web.total_seconds, 0)), 0.0)';
+        const productivityExpr = this.productivityScoreService.buildScoreSql({
+          activeBeats: 'b.active_beats',
+          totalBeats: 'b.total_beats',
+          weightedQualitySeconds:
+            '(ifNull(app.weighted_seconds, 0) + ifNull(web.weighted_seconds, 0))',
+          totalQualitySeconds:
+            '(ifNull(app.total_seconds, 0) + ifNull(web.total_seconds, 0))',
+        });
 
         const query = `
           SELECT
@@ -704,24 +719,20 @@ export class SessionSummariesService {
               ${keyboardMouseExpr} AS keyboard_mouse_score,
               ${appScoreExpr} AS app_score,
               ${browserScoreExpr} AS browser_score,
-              least(100.0, greatest(0.0,
-                0.35 * (${activePercentExpr}) +
-                0.20 * (${keyboardMouseExpr}) +
-                0.30 * (${appScoreExpr}) +
-                0.15 * (${browserScoreExpr})
-              )) AS productivity_score
+              ${productivityExpr} AS productivity_score
             FROM (
               SELECT
                 contractor_id,
                 toDate(beat_timestamp, '${OPERATIONAL_TIMEZONE}') AS workday,
                 toHour(toTimeZone(beat_timestamp, '${OPERATIONAL_TIMEZONE}')) AS hour,
                 count() AS total_beats,
-                countIf(is_idle = 0) AS active_beats,
+                countIf(is_idle = 0 OR mic_active = 1 OR cam_active = 1 OR call_app_active = 1) AS active_beats,
                 sum(keyboard_count) AS total_keyboard_inputs,
                 sum(mouse_clicks) AS total_mouse_clicks
               FROM contractor_activity_15s
               WHERE contractor_id = '${contractorId}'
                 AND ${dateFilterBeats}
+                AND power_state = 'active'
                 AND toHour(toTimeZone(beat_timestamp, '${OPERATIONAL_TIMEZONE}')) >= ${startHour}
                 AND toHour(toTimeZone(beat_timestamp, '${OPERATIONAL_TIMEZONE}')) < ${endHour}${agentFilterBeats}
               GROUP BY contractor_id, workday, hour
@@ -731,16 +742,15 @@ export class SessionSummariesService {
                 contractor_id,
                 toDate(timestamp, '${OPERATIONAL_TIMEZONE}') AS workday,
                 toHour(toTimeZone(timestamp, '${OPERATIONAL_TIMEZONE}')) AS hour,
-                sum(JSONExtractFloat(payload, 'AppUsage', app) * ifNull(d.weight, 0.5)) AS weighted_seconds,
-                sum(JSONExtractFloat(payload, 'AppUsage', app)) AS total_seconds
+                sum(tupleElement(app_kv, 2) * if(d.weight > 0, d.weight, ${ProductivityScoreService.W_UNKNOWN})) AS weighted_seconds,
+                sum(tupleElement(app_kv, 2)) AS total_seconds
               FROM events_raw
-              ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app
-              LEFT JOIN apps_dimension d ON d.name = app
+              ARRAY JOIN ${appUsageMapSql()} AS app_kv
+              LEFT JOIN apps_dimension d ON d.name = tupleElement(app_kv, 1)
               WHERE contractor_id = '${contractorId}'
                 AND ${dateFilterEvents}
                 AND toHour(toTimeZone(timestamp, '${OPERATIONAL_TIMEZONE}')) >= ${startHour}
                 AND toHour(toTimeZone(timestamp, '${OPERATIONAL_TIMEZONE}')) < ${endHour}${agentFilterEvents}
-                AND JSONHas(payload, 'AppUsage')
               GROUP BY contractor_id, workday, hour
             ) app ON app.contractor_id = b.contractor_id
               AND app.workday = b.workday
@@ -751,18 +761,17 @@ export class SessionSummariesService {
                 toDate(timestamp, '${OPERATIONAL_TIMEZONE}') AS workday,
                 toHour(toTimeZone(timestamp, '${OPERATIONAL_TIMEZONE}')) AS hour,
                 sum(
-                  JSONExtractFloat(payload, 'browser', dc) *
-                  ifNull(d.weight, 1)
+                  tupleElement(dom_kv, 2) *
+                  if(d.weight > 0, d.weight, ${ProductivityScoreService.W_UNKNOWN})
                 ) AS weighted_seconds,
-                sum(JSONExtractFloat(payload, 'browser', dc)) AS total_seconds
+                sum(tupleElement(dom_kv, 2)) AS total_seconds
               FROM events_raw
-              ARRAY JOIN JSONExtractKeys(payload, 'browser') AS dc
-              LEFT JOIN domains_dimension d ON d.domain = dc
+              ARRAY JOIN ${domainUsageMapSql()} AS dom_kv
+              LEFT JOIN domains_dimension d ON d.domain = tupleElement(dom_kv, 1)
               WHERE contractor_id = '${contractorId}'
                 AND ${dateFilterEvents}
                 AND toHour(toTimeZone(timestamp, '${OPERATIONAL_TIMEZONE}')) >= ${startHour}
                 AND toHour(toTimeZone(timestamp, '${OPERATIONAL_TIMEZONE}')) < ${endHour}${agentFilterEvents}
-                AND JSONHas(payload, 'browser')
               GROUP BY contractor_id, workday, hour
             ) web ON web.contractor_id = b.contractor_id
               AND web.workday = b.workday

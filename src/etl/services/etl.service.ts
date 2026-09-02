@@ -18,6 +18,12 @@ import {
 import { ActivityToDailyMetricsTransformer } from '../transformers/activity-to-daily-metrics.transformer';
 import { ActivityToSessionSummaryTransformer } from '../transformers/activity-to-session-summary.transformer';
 import { EventsToActivityTransformer } from '../transformers/events-to-activity.transformer';
+import {
+  appUsageMapSql,
+  domainUsageMapSql,
+  payloadCteSql,
+} from './payload-sql.util';
+import { ProductivityScoreService } from './productivity-score.service';
 
 /**
  * Servicio ETL que orquesta las transformaciones RAW → ADT.
@@ -32,6 +38,7 @@ export class EtlService {
     private readonly eventsToActivityTransformer: EventsToActivityTransformer,
     private readonly activityToDailyMetricsTransformer: ActivityToDailyMetricsTransformer,
     private readonly activityToSessionSummaryTransformer: ActivityToSessionSummaryTransformer,
+    private readonly productivityScoreService: ProductivityScoreService,
   ) {}
 
   /**
@@ -230,6 +237,104 @@ export class EtlService {
   }
 
   /**
+   * Umbral de idle a nivel beat (micro-idle). Debe coincidir con
+   * IDLE_THRESHOLD_SECONDS de EventsToActivityTransformer para mantener UNA
+   * sola definición de is_idle en todo el sistema.
+   */
+  private static readonly IDLE_THRESHOLD_SECONDS = 10;
+
+  /**
+   * Expresiones SELECT compartidas por buildInsertActivityQuery y el force-reprocess.
+   * Extrae del payload RAW todas las columnas de contractor_activity_15s, incluyendo
+   * los campos del agente v2 (beat_duration, power_state, browser_source, señales de
+   * presencia). Es backward-compatible con payloads v1 gracias a los defaults:
+   *   - BeatDuration ausente → 15s
+   *   - PowerState ausente   → 'active'
+   *   - PresenceSignals/DomainUsage ausentes → 0 / payload_version = 1
+   *
+   * is_idle (micro-idle) UNIFICADO: sin teclado ni mouse Y IdleTime >= umbral.
+   */
+  /**
+   * Expresiones SELECT compartidas por buildInsertActivityQuery y el force-reprocess.
+   * Extrae del payload RAW todas las columnas de contractor_activity_15s, incluyendo
+   * los campos del agente v2 (beat_duration, power_state, browser_source, señales de
+   * presencia). Es backward-compatible con payloads v1 gracias a los defaults:
+   *   - BeatDuration ausente → 15s
+   *   - PowerState ausente   → 'active'
+   *   - PresenceSignals/DomainUsage ausentes → 0 / payload_version = 1
+   *
+   * is_idle (micro-idle) UNIFICADO: sin teclado ni mouse Y IdleTime >= umbral.
+   */
+  /**
+   * Expresiones SELECT compartidas por buildInsertActivityQuery y el force-reprocess.
+   * Extrae del payload RAW todas las columnas de contractor_activity_15s.
+   *
+   * Requiere que la query arranque con payloadCteSql(): todo sale del alias `p`,
+   * que es el payload parseado UNA sola vez.
+   *
+   * Compatibilidad de versiones (`p.v` vale 3 solo en payloads v3):
+   *   - BeatDuration/beat_duration ausente → 15s
+   *   - PowerState/power_state ausente     → 'active'
+   *   - PresenceSignals/*_active ausentes  → 0
+   *
+   * is_idle (micro-idle) UNIFICADO: sin teclado ni mouse Y idle >= umbral.
+   */
+  private buildActivitySelectColumns(): string {
+    const idleThreshold = EtlService.IDLE_THRESHOLD_SECONDS;
+
+    // OJO: ClickHouse 23.8 NO resuelve el acceso con punto sobre un alias de
+    // Tuple venido de un WITH (`p.v` lo toma como nombre de columna y falla con
+    // UNKNOWN_IDENTIFIER). Hay que usar tupleElement() por nombre.
+    const f = (field: string) => `tupleElement(p, '${field}')`;
+    const nested = (outer: string, inner: string) =>
+      `tupleElement(tupleElement(p, '${outer}'), '${inner}')`;
+
+    // Un payload v3 trae "v": 3; los anteriores no traen la clave y cae en 0.
+    const isV3 = `(${f('v')} >= 3)`;
+
+    const keyboard = `if(${isV3}, ${f('keyboard_count')}, ${nested('Keyboard', 'InputsCount')})`;
+    const mouse = `if(${isV3}, ${f('mouse_clicks')}, ${nested('Mouse', 'ClicksCount')})`;
+    const idle = `if(${isV3}, ${f('idle_time')}, ${f('IdleTime')})`;
+    const rawBeat = `if(${isV3}, ${f('beat_duration')}, ${f('BeatDuration')})`;
+    const powerState = `if(${isV3}, ${f('power_state')}, ${f('PowerState')})`;
+    const browserSource = `if(${isV3}, ${f('browser_source')}, ${f('BrowserSource')})`;
+    const mic = `if(${isV3}, ${f('mic_active')}, ${nested('PresenceSignals', 'microphone_active')})`;
+    const cam = `if(${isV3}, ${f('cam_active')}, ${nested('PresenceSignals', 'camera_active')})`;
+    const call = `if(${isV3}, ${f('call_app_active')}, ${nested('PresenceSignals', 'call_app_active')})`;
+    const legacyBeat = f('BeatDuration');
+
+    return `
+        contractor_id,
+        agent_id,
+        session_id,
+        agent_session_id,
+        timestamp AS beat_timestamp,
+        if((${keyboard}) + (${mouse}) = 0 AND (${idle}) >= ${idleThreshold}, 1, 0) AS is_idle,
+        toUInt32(${keyboard}) AS keyboard_count,
+        toUInt32(${mouse}) AS mouse_clicks,
+        if((${rawBeat}) > 0, ${rawBeat}, 15) AS beat_duration,
+        if((${powerState}) != '', ${powerState}, 'active') AS power_state,
+        ${browserSource} AS browser_source,
+        toUInt8(${mic}) AS mic_active,
+        toUInt8(${cam}) AS cam_active,
+        toUInt8(${call}) AS call_app_active,
+        -- v3 se autodeclara; v2 se reconoce por traer BeatDuration (se agregó
+        -- junto con DomainUsage, así que alcanza con mirar uno de los dos).
+        if(${isV3}, 3, if(${legacyBeat} > 0, 2, 1)) AS payload_version,
+        toDate(timestamp, '${OPERATIONAL_TIMEZONE}') AS workday,
+        now() AS created_at
+    `;
+  }
+
+  /** Lista de columnas destino (orden explícito) para INSERT en contractor_activity_15s. */
+  private static readonly ACTIVITY_INSERT_COLUMNS = `
+    contractor_id, agent_id, session_id, agent_session_id, beat_timestamp,
+    is_idle, keyboard_count, mouse_clicks, beat_duration, power_state,
+    browser_source, mic_active, cam_active, call_app_active, payload_version,
+    workday, created_at
+  `;
+
+  /**
    * Construye la query de INSERT SELECT para un día concreto de contractor_activity_15s.
    */
   private buildInsertActivityQuery(day: Date, contractorId?: string): string {
@@ -240,22 +345,10 @@ export class EtlService {
       : '';
 
     return `
-      INSERT INTO contractor_activity_15s
+      INSERT INTO contractor_activity_15s (${EtlService.ACTIVITY_INSERT_COLUMNS})
+      ${payloadCteSql()}
       SELECT
-        contractor_id,
-        agent_id,
-        session_id,
-        agent_session_id,
-        timestamp AS beat_timestamp,
-        if(
-          (toUInt32OrZero(JSON_VALUE(payload, '$.Keyboard.InputsCount'))
-           + toUInt32OrZero(JSON_VALUE(payload, '$.Mouse.ClicksCount'))) = 0,
-          1, 0
-        ) AS is_idle,
-        toUInt32OrZero(JSON_VALUE(payload, '$.Keyboard.InputsCount')) AS keyboard_count,
-        toUInt32OrZero(JSON_VALUE(payload, '$.Mouse.ClicksCount')) AS mouse_clicks,
-        toDate(timestamp, '${OPERATIONAL_TIMEZONE}') AS workday,
-        now() AS created_at
+        ${this.buildActivitySelectColumns()}
       FROM events_raw
       WHERE toDate(timestamp, '${OPERATIONAL_TIMEZONE}') = toDate('${dayStr}')
       ${eventsFilter}
@@ -283,20 +376,38 @@ export class EtlService {
 
       const fromStr = from ? this.formatDate(from) : null;
       const toStr = to ? this.formatDate(to) : null;
-      const fromDay = fromStr ? fromStr.split(' ')[0] : null;
-      const toDay = toStr ? toStr.split(' ')[0] : null;
+
+      // Los límites de partición se derivan en la ZONA OPERATIVA, no en UTC.
+      // `formatDate()` es `toISOString()`, así que el fin de un día operativo cae
+      // en el día UTC siguiente: reprocesar el día D calculaba `toDay = D+1` y el
+      // DELETE se llevaba puesta la partición del día siguiente sin reponerla.
+      const fromDay = from ? formatDateInTZ(from) : null;
+      const toDay = to ? formatDateInTZ(to) : null;
 
       const contractorFilter = contractorId
         ? ` AND contractor_id = '${contractorId}'`
         : '';
 
-      // 1) Borrar por partición (workday) en el rango (y contratista si aplica)
+      // 1) Borrar EXACTAMENTE lo que se va a reinsertar.
+      //
+      // Los límites de `workday` solo podan particiones (barato); la precisión
+      // real la da el filtro por `beat_timestamp`, que es el mismo rango que usa
+      // el INSERT de abajo. Antes se borraba el workday completo mientras el
+      // INSERT reponía solo el rango pedido: como el rango por defecto es de 2
+      // horas, una llamada sin argumentos borraba el día entero y devolvía 2
+      // horas de datos.
+      //
+      // `mutations_sync = 1` espera a que la mutación termine: sin eso el INSERT
+      // corre contra un borrado a medias y quedan filas duplicadas.
       await this.clickHouseService.command(`
         ALTER TABLE contractor_activity_15s DELETE
         WHERE 1=1
           ${fromDay ? `AND workday >= toDate('${fromDay}')` : ''}
           ${toDay ? `AND workday <= toDate('${toDay}')` : ''}
+          ${fromStr ? `AND beat_timestamp >= '${fromStr}'` : ''}
+          ${toStr ? `AND beat_timestamp <= '${toStr}'` : ''}
           ${contractorFilter}
+        SETTINGS mutations_sync = 1
       `);
 
       // 2) Insertar con INSERT SELECT usando filtros de timestamp (y contratista si aplica)
@@ -306,22 +417,10 @@ export class EtlService {
         contractorFilter;
 
       const insertQuery = `
-        INSERT INTO contractor_activity_15s
+        INSERT INTO contractor_activity_15s (${EtlService.ACTIVITY_INSERT_COLUMNS})
+        ${payloadCteSql()}
         SELECT
-          contractor_id,
-          agent_id,
-          session_id,
-          agent_session_id,
-          timestamp AS beat_timestamp,
-          if(
-            (toUInt32OrZero(JSON_VALUE(payload, '$.Keyboard.InputsCount'))
-             + toUInt32OrZero(JSON_VALUE(payload, '$.Mouse.ClicksCount'))) = 0,
-            1, 0
-          ) AS is_idle,
-          toUInt32OrZero(JSON_VALUE(payload, '$.Keyboard.InputsCount')) AS keyboard_count,
-          toUInt32OrZero(JSON_VALUE(payload, '$.Mouse.ClicksCount')) AS mouse_clicks,
-          toDate(timestamp, '${OPERATIONAL_TIMEZONE}') AS workday,
-          now() AS created_at
+          ${this.buildActivitySelectColumns()}
         FROM events_raw
         WHERE 1=1
         ${filters}
@@ -360,12 +459,16 @@ export class EtlService {
    * @param fromDate - Fecha de inicio del rango (opcional, para procesar múltiples días)
    * @param toDate - Fecha de fin del rango (opcional, para procesar múltiples días)
    * @param contractorIds - Si se pasa, procesa solo esos contratistas (para flujo trigger al cerrar sesión)
+   * @param force - Si true, borra y recalcula los días indicados aunque ya estén poblados.
+   *                Necesario para backfills tras un cambio de fórmula o de pesos; sin este
+   *                flag los días ya existentes se saltean y el reproceso es un no-op.
    */
   async processActivityToDailyMetrics(
     workday?: Date,
     fromDate?: Date,
     toDate?: Date,
     contractorIds?: string[],
+    force = false,
   ): Promise<ContractorDailyMetricsDto[]> {
     try {
       // Asegurar que las columnas app_usage y browser_usage existan (migración)
@@ -401,9 +504,49 @@ export class EtlService {
         : '';
 
       const allMetrics: ContractorDailyMetricsDto[] = [];
+      /** Días pedidos con force pero sin beats fuente (TTL vencido): no se tocaron. */
+      const skippedNoSource: string[] = [];
       for (const dayStr of days) {
-        // Si ya existen métricas para el día, no recalcular (salvo cuando contractorIds: borrar y reinsertar solo esos)
-        if (!contractorIds?.length) {
+        // Precedencia:
+        //  1. force        → borrar y recalcular SIEMPRE (backfill por cambio de pesos).
+        //  2. contractorIds → borrar solo esos contractors y reinsertarlos.
+        //  3. default      → idempotente: si el día ya está poblado, devolver lo existente.
+        if (force) {
+          // GUARDA ANTI-BORRADO: contractor_activity_15s tiene TTL de 365 días y
+          // contractor_daily_metrics de 730. Para días viejos los beats fuente ya no
+          // existen: borrar y recalcular dejaría el día VACÍO en vez de recalculado.
+          // Si no hay fuente, se preserva lo que haya y se avisa.
+          const src = await this.clickHouseService.query<{ cnt: number }>(`
+            SELECT count() AS cnt
+            FROM contractor_activity_15s
+            WHERE workday = toDate('${dayStr}')
+              AND power_state = 'active'
+            ${contractorFilter}
+          `);
+          if ((src[0]?.cnt || 0) === 0) {
+            this.logger.warn(
+              `⚠️ Skipping force recompute for ${dayStr}: no source beats in ` +
+                `contractor_activity_15s (fuera del TTL de 365 días o día sin actividad). ` +
+                `Se preservan las métricas existentes.`,
+            );
+            skippedNoSource.push(dayStr);
+            continue;
+          }
+
+          // mutations_sync = 1: esperar a que la mutación termine antes de reinsertar.
+          // Sin esto el INSERT puede correr contra el DELETE todavía en vuelo y dejar
+          // filas duplicadas hasta el próximo merge del ReplacingMergeTree.
+          await this.clickHouseService.command(`
+            ALTER TABLE contractor_daily_metrics DELETE
+            WHERE workday = toDate('${dayStr}')
+            ${contractorFilter}
+            SETTINGS mutations_sync = 1
+          `);
+          this.logger.log(
+            `♻️ Force recompute contractor_daily_metrics for ${dayStr}` +
+              `${contractorIds?.length ? ` (${contractorIds.length} contractors)` : ' (all contractors)'}`,
+          );
+        } else if (!contractorIds?.length) {
           const exists = await this.clickHouseService.query<{ cnt: number }>(`
             SELECT count() AS cnt FROM contractor_daily_metrics WHERE workday = toDate('${dayStr}')
           `);
@@ -446,9 +589,22 @@ export class EtlService {
           `);
         }
 
-        // ✅ CONSOLIDACIÓN MULTI-AGENTE: Consolidar beats por timestamp antes de calcular métricas
-        // Esto evita que agentes idle en segundo plano penalicen la productividad
-        // cuando otro agente está activo en el mismo intervalo de 15s
+        // ✅ CONSOLIDACIÓN MULTI-AGENTE + GRACE PERIOD (real_idle) + score multiplicativo
+        // - Consolida beats por timestamp: contratista activo si CUALQUIER agente
+        //   está activo, o si hay señal de presencia (mic/cam/llamada).
+        // - is_real_active: ventana deslizante de 8 beats (~2 min). Un beat cuenta
+        //   como activo si hubo actividad/presencia en los últimos 2 min (grace).
+        // - Tiempos usan beat_duration (segundos reales), no count()*15.
+        // - Score generado por ProductivityScoreService (única fuente de verdad).
+        const scoreSql = this.productivityScoreService.buildScoreSql({
+          activeBeats: 'sum(ca.is_real_active)',
+          totalBeats: 'count()',
+          weightedQualitySeconds:
+            '(ifNull(any(app.weighted_seconds), 0) + ifNull(any(web.weighted_seconds), 0))',
+          totalQualitySeconds:
+            '(ifNull(any(app.total_seconds), 0) + ifNull(any(web.total_seconds), 0))',
+        });
+
         const insertQuery = `
         INSERT INTO contractor_daily_metrics (
           contractor_id,
@@ -466,59 +622,77 @@ export class EtlService {
           productivity_score,
           app_usage,
           browser_usage,
+          metrics_version,
           created_at
         )
         SELECT
           ca.contractor_id,
           ca.workday,
           count() AS total_beats,
-          sum(if(ca.is_idle_contractor = 0, 1, 0)) AS active_beats,
-          sum(if(ca.is_idle_contractor = 1, 1, 0)) AS idle_beats,
-          100.0 * sum(if(ca.is_idle_contractor = 0, 1, 0)) / nullIf(count(), 0) AS active_percentage,
+          sum(ca.is_real_active) AS active_beats,
+          count() - sum(ca.is_real_active) AS idle_beats,
+          100.0 * sum(ca.is_real_active) / nullIf(count(), 0) AS active_percentage,
           sum(ca.keyboard_count_contractor) AS total_keyboard_inputs,
           sum(ca.mouse_clicks_contractor) AS total_mouse_clicks,
-          round(sum(ca.keyboard_count_contractor) / nullIf(count() / 4.0, 0), 2) AS avg_keyboard_per_min,
-          round(sum(ca.mouse_clicks_contractor) / nullIf(count() / 4.0, 0), 2) AS avg_mouse_per_min,
-          count() * 15 AS total_session_time_seconds,
-          sum(if(ca.is_idle_contractor = 0, 1, 0)) * 15 AS effective_work_seconds,
-          least(100.0, greatest(0.0,
-            0.35 * (100.0 * sum(if(ca.is_idle_contractor = 0, 1, 0)) / nullIf(count(), 0)) +
-            0.20 * least(100.0, 15.0 * ln(1 + (((sum(ca.keyboard_count_contractor) + sum(ca.mouse_clicks_contractor)) / nullIf(count() * 15 / 60, 0)) / 2.0))) +
-            0.30 * ifNull(
-              100.0 * greatest(0.0, least(1.0, ((any(app.weighted_seconds) / nullIf(any(app.total_seconds), 0)) - 0.2) / 0.8)),
-              50.0
-            ) +
-            0.15 * ifNull(
-              100.0 * greatest(0.0, least(1.0, ((any(web.weighted_seconds) / nullIf(any(web.total_seconds), 0)) - 0.2) / 0.8)),
-              50.0
-            )
-          )) AS productivity_score,
+          round(sum(ca.keyboard_count_contractor) / nullIf(sum(ca.beat_duration) / 60.0, 0), 2) AS avg_keyboard_per_min,
+          round(sum(ca.mouse_clicks_contractor) / nullIf(sum(ca.beat_duration) / 60.0, 0), 2) AS avg_mouse_per_min,
+          toUInt64(round(sum(ca.beat_duration))) AS total_session_time_seconds,
+          toUInt64(round(sum(if(ca.is_real_active = 1, ca.beat_duration, 0)))) AS effective_work_seconds,
+          ${scoreSql} AS productivity_score,
           ifNull(any(app_map.app_usage), map()) AS app_usage,
           ifNull(any(browser_map.browser_usage), map()) AS browser_usage,
+          max(ca.payload_version) AS metrics_version,
           now() AS created_at
         FROM (
           SELECT
             contractor_id,
             workday,
             beat_timestamp,
-            MIN(is_idle) AS is_idle_contractor,
-            SUM(keyboard_count) AS keyboard_count_contractor,
-            SUM(mouse_clicks) AS mouse_clicks_contractor
-          FROM contractor_activity_15s
-          WHERE workday = toDate('${dayStr}')
-          ${contractorFilter}
-          GROUP BY contractor_id, workday, beat_timestamp
+            is_idle_contractor,
+            keyboard_count_contractor,
+            mouse_clicks_contractor,
+            beat_duration,
+            payload_version,
+            -- Grace period: activo si hubo actividad/presencia en los últimos 8 beats (~2 min)
+            max(is_active_micro) OVER (
+              PARTITION BY contractor_id
+              ORDER BY beat_timestamp
+              ROWS BETWEEN 7 PRECEDING AND CURRENT ROW
+            ) AS is_real_active
+          FROM (
+            SELECT
+              contractor_id,
+              workday,
+              beat_timestamp,
+              MIN(is_idle) AS is_idle_contractor,
+              SUM(keyboard_count) AS keyboard_count_contractor,
+              SUM(mouse_clicks) AS mouse_clicks_contractor,
+              MAX(beat_duration) AS beat_duration,
+              MAX(payload_version) AS payload_version,
+              -- micro-activo: algún agente activo, o presencia (mic/cam/llamada)
+              toUInt8(
+                MIN(is_idle) = 0
+                OR MAX(mic_active) = 1
+                OR MAX(cam_active) = 1
+                OR MAX(call_app_active) = 1
+              ) AS is_active_micro
+            FROM contractor_activity_15s
+            WHERE workday = toDate('${dayStr}')
+              AND power_state = 'active'
+              ${contractorFilter}
+            GROUP BY contractor_id, workday, beat_timestamp
+          )
         ) ca
-        -- JOIN para productivity_score: totales ponderados por día
+        -- JOIN calidad apps: segundos ponderados por día (weight desde apps_dimension)
         LEFT JOIN (
-          SELECT 
+          SELECT
             contractor_id,
             toDate(timestamp, '${OPERATIONAL_TIMEZONE}') AS workday,
-            sum(JSONExtractFloat(payload, 'AppUsage', app) * ifNull(d.weight, 0.5)) AS weighted_seconds,
-            sum(JSONExtractFloat(payload, 'AppUsage', app)) AS total_seconds
+            sum(tupleElement(app_kv, 2) * if(d.weight > 0, d.weight, ${ProductivityScoreService.W_UNKNOWN})) AS weighted_seconds,
+            sum(tupleElement(app_kv, 2)) AS total_seconds
           FROM events_raw
-          ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app
-          LEFT JOIN apps_dimension d ON d.name = app
+          ARRAY JOIN ${appUsageMapSql()} AS app_kv
+          LEFT JOIN apps_dimension d ON d.name = tupleElement(app_kv, 1)
           WHERE toDate(timestamp, '${OPERATIONAL_TIMEZONE}') = toDate('${dayStr}')
           ${contractorFilter}
           GROUP BY contractor_id, workday
@@ -533,29 +707,29 @@ export class EtlService {
             SELECT
               contractor_id,
               toDate(timestamp, '${OPERATIONAL_TIMEZONE}') AS workday,
-              app,
-              sum(JSONExtractFloat(payload, 'AppUsage', app)) AS sec
+              tupleElement(app_kv, 1) AS app,
+              sum(tupleElement(app_kv, 2)) AS sec
             FROM events_raw
-            ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app
+            ARRAY JOIN ${appUsageMapSql()} AS app_kv
             WHERE toDate(timestamp, '${OPERATIONAL_TIMEZONE}') = toDate('${dayStr}')
             ${contractorFilter}
             GROUP BY contractor_id, workday, app
           )
           GROUP BY contractor_id, workday
         ) app_map ON app_map.contractor_id = ca.contractor_id AND app_map.workday = ca.workday
-        -- JOIN para productivity_score: totales ponderados browser por día (peso por dominio desde domains_dimension cuando existe)
+        -- JOIN calidad dominios: segundos ponderados por día (weight desde domains_dimension)
         LEFT JOIN (
-          SELECT 
+          SELECT
             contractor_id,
             toDate(timestamp, '${OPERATIONAL_TIMEZONE}') AS workday,
             sum(
-              JSONExtractFloat(payload, 'browser', dc) *
-              ifNull(d.weight, 1)
+              tupleElement(dom_kv, 2) *
+              if(d.weight > 0, d.weight, ${ProductivityScoreService.W_UNKNOWN})
             ) AS weighted_seconds,
-            sum(JSONExtractFloat(payload, 'browser', dc)) AS total_seconds
+            sum(tupleElement(dom_kv, 2)) AS total_seconds
           FROM events_raw
-          ARRAY JOIN JSONExtractKeys(payload, 'browser') AS dc
-          LEFT JOIN domains_dimension d ON d.domain = dc
+          ARRAY JOIN ${domainUsageMapSql()} AS dom_kv
+          LEFT JOIN domains_dimension d ON d.domain = tupleElement(dom_kv, 1)
           WHERE toDate(timestamp, '${OPERATIONAL_TIMEZONE}') = toDate('${dayStr}')
           ${contractorFilter}
           GROUP BY contractor_id, workday
@@ -570,10 +744,10 @@ export class EtlService {
             SELECT
               contractor_id,
               toDate(timestamp, '${OPERATIONAL_TIMEZONE}') AS workday,
-              dc,
-              sum(JSONExtractFloat(payload, 'browser', dc)) AS sec
+              tupleElement(dom_kv, 1) AS dc,
+              sum(tupleElement(dom_kv, 2)) AS sec
             FROM events_raw
-            ARRAY JOIN JSONExtractKeys(payload, 'browser') AS dc
+            ARRAY JOIN ${domainUsageMapSql()} AS dom_kv
             WHERE toDate(timestamp, '${OPERATIONAL_TIMEZONE}') = toDate('${dayStr}')
             ${contractorFilter}
             GROUP BY contractor_id, workday, dc
@@ -618,6 +792,15 @@ export class EtlService {
         allMetrics.push(...metrics);
       }
 
+      if (skippedNoSource.length) {
+        this.logger.warn(
+          `⚠️ Force recompute omitió ${skippedNoSource.length}/${days.length} día(s) sin beats fuente ` +
+            `(TTL de contractor_activity_15s: 365 días). Esos días conservan su valor anterior: ` +
+            `${skippedNoSource.slice(0, 10).join(', ')}` +
+            `${skippedNoSource.length > 10 ? `, … (+${skippedNoSource.length - 10})` : ''}`,
+        );
+      }
+
       return allMetrics;
     } catch (error) {
       this.logger.error(
@@ -628,8 +811,110 @@ export class EtlService {
   }
 
   /**
+   * Construye el INSERT ... SELECT de session_summary.
+   * Una fila por (session_id, agent_id) con score multiplicativo, real_idle (grace)
+   * y tiempos basados en beat_duration. Fuente única de la query de sesión —
+   * usado por processActivityToSessionSummary y reprocessSessionSummariesForDateRange.
+   *
+   * @param innerScope WHERE extra aplicado en el scan interno de contractor_activity_15s
+   *                   (ej: `AND session_id = '...'`). Siempre incluye power_state='active'.
+   * @param outerFilter WHERE aplicado sobre la subquery ventaneada `a`
+   *                    (ej: cláusula NOT IN de idempotencia, o filtro por sesión).
+   */
+  private buildSessionSummaryInsertQuery(
+    innerScope: string,
+    outerFilter: string,
+  ): string {
+    const scoreSql = this.productivityScoreService.buildScoreSql({
+      activeBeats: 'sum(a.is_real_active)',
+      totalBeats: 'count()',
+      weightedQualitySeconds:
+        '(ifNull(any(app.weighted_seconds), 0) + ifNull(any(web.weighted_seconds), 0))',
+      totalQualitySeconds:
+        '(ifNull(any(app.app_total_seconds), 0) + ifNull(any(web.web_total_seconds), 0))',
+    });
+
+    return `
+      INSERT INTO session_summary (session_id, contractor_id, agent_id, session_start, session_end, total_seconds, active_seconds, idle_seconds, productivity_score, metrics_version, created_at)
+      SELECT
+        a.session_id,
+        any(a.contractor_id) AS contractor_id,
+        any(a.agent_id) AS agent_id,
+        min(a.beat_timestamp) AS session_start,
+        max(a.beat_timestamp) AS session_end,
+        toUInt32(round(sum(a.beat_duration))) AS total_seconds,
+        toUInt32(round(sum(if(a.is_real_active = 1, a.beat_duration, 0)))) AS active_seconds,
+        toUInt32(round(sum(if(a.is_real_active = 0, a.beat_duration, 0)))) AS idle_seconds,
+        ${scoreSql} AS productivity_score,
+        max(a.payload_version) AS metrics_version,
+        now() AS created_at
+      FROM (
+        SELECT
+          session_id,
+          agent_id,
+          contractor_id,
+          beat_timestamp,
+          keyboard_count,
+          mouse_clicks,
+          beat_duration,
+          payload_version,
+          is_active_micro,
+          -- Grace period por (session_id, agent_id): activo si hubo actividad/presencia
+          -- en los últimos 8 beats (~2 min).
+          max(is_active_micro) OVER (
+            PARTITION BY session_id, agent_id
+            ORDER BY beat_timestamp
+            ROWS BETWEEN 7 PRECEDING AND CURRENT ROW
+          ) AS is_real_active
+        FROM (
+          SELECT
+            session_id,
+            agent_id,
+            contractor_id,
+            beat_timestamp,
+            keyboard_count,
+            mouse_clicks,
+            beat_duration,
+            payload_version,
+            toUInt8(
+              is_idle = 0 OR mic_active = 1 OR cam_active = 1 OR call_app_active = 1
+            ) AS is_active_micro
+          FROM contractor_activity_15s
+          WHERE power_state = 'active'
+          ${innerScope}
+        )
+      ) a
+      LEFT JOIN (
+        SELECT
+          e.session_id,
+          e.agent_id,
+          sum(tupleElement(app_kv, 2) * if(d.weight > 0, d.weight, ${ProductivityScoreService.W_UNKNOWN})) AS weighted_seconds,
+          sum(tupleElement(app_kv, 2)) AS app_total_seconds
+        FROM events_raw e
+        ARRAY JOIN ${appUsageMapSql()} AS app_kv
+        LEFT JOIN apps_dimension d ON d.name = tupleElement(app_kv, 1)
+        GROUP BY e.session_id, e.agent_id
+      ) app ON app.session_id = a.session_id AND coalesce(app.agent_id, '') = coalesce(a.agent_id, '')
+      LEFT JOIN (
+        SELECT
+          e.session_id,
+          e.agent_id,
+          sum(tupleElement(dom_kv, 2) * if(d.weight > 0, d.weight, ${ProductivityScoreService.W_UNKNOWN})) AS weighted_seconds,
+          sum(tupleElement(dom_kv, 2)) AS web_total_seconds
+        FROM events_raw e
+        ARRAY JOIN ${domainUsageMapSql()} AS dom_kv
+        LEFT JOIN domains_dimension d ON d.domain = tupleElement(dom_kv, 1)
+        GROUP BY e.session_id, e.agent_id
+      ) web ON web.session_id = a.session_id AND coalesce(web.agent_id, '') = coalesce(a.agent_id, '')
+      ${outerFilter}
+      GROUP BY a.session_id, a.agent_id
+      SETTINGS max_partitions_per_insert_block=1000
+    `;
+  }
+
+  /**
    * Genera resúmenes de sesión desde contractor_activity_15s.
-   * Una fila por (session_id, agent_id). Agrupa por ambos y calcula productividad con fórmula multi-factor.
+   * Una fila por (session_id, agent_id). Score multiplicativo + real_idle + beat_duration.
    *
    * Modos de uso:
    * - sessionId: recalcula solo esa sesión (DELETE + INSERT de ese session_id).
@@ -665,87 +950,29 @@ export class EtlService {
         `);
       }
 
-      // 2) Construir filtro principal y cláusula de idempotencia
-      // Idempotencia por defecto: excluir pares (session_id, agent_id) que ya están en session_summary.
-      // Para sessionId específico o contractor+workday ya borramos antes, así que NO aplicamos NOT IN en esos casos.
-      const shouldApplyNotIn = !sessionId && !(contractorId && workdayStr);
-
-      const notInClause = shouldApplyNotIn
-        ? `AND (a.session_id, coalesce(a.agent_id, '')) NOT IN (
-        SELECT session_id, coalesce(agent_id, '') FROM session_summary
-      )`
-        : '';
-
-      let sessionFilter: string;
+      // 2) Construir scope interno + filtro de idempotencia según el modo.
+      // - Idempotencia (modo "all pending"): excluir pares (session_id, agent_id)
+      //   ya presentes en session_summary.
+      // - sessionId o contractor+workday: ya borramos antes, no aplicamos NOT IN.
+      let innerScope: string;
+      let outerFilter: string;
       if (sessionId) {
-        sessionFilter = `WHERE a.session_id = '${sessionId}'`;
+        innerScope = `AND session_id = '${sessionId}'`;
+        outerFilter = '';
       } else if (contractorId && workdayStr) {
-        sessionFilter = `
-          WHERE a.contractor_id = '${contractorId}'
-            AND toDate(a.beat_timestamp, '${OPERATIONAL_TIMEZONE}') = toDate('${workdayStr}')
-        `;
+        innerScope = `AND contractor_id = '${contractorId}' AND toDate(beat_timestamp, '${OPERATIONAL_TIMEZONE}') = toDate('${workdayStr}')`;
+        outerFilter = '';
       } else {
-        sessionFilter = `
-          WHERE a.session_id IN (
-             SELECT DISTINCT session_id FROM contractor_activity_15s WHERE session_id IS NOT NULL
-           ) ${notInClause}
-        `;
+        innerScope = `AND session_id IS NOT NULL`;
+        outerFilter = `WHERE (a.session_id, coalesce(a.agent_id, '')) NOT IN (
+          SELECT session_id, coalesce(agent_id, '') FROM session_summary
+        )`;
       }
 
-      const insertQuery = `
-        INSERT INTO session_summary (session_id, contractor_id, agent_id, session_start, session_end, total_seconds, active_seconds, idle_seconds, productivity_score, created_at)
-        SELECT
-          a.session_id,
-          any(a.contractor_id) AS contractor_id,
-          any(a.agent_id) AS agent_id,
-          min(a.beat_timestamp) AS session_start,
-          max(a.beat_timestamp) AS session_end,
-          count() * 15 AS total_seconds,
-          sum(if(a.is_idle = 0, 15, 0)) AS active_seconds,
-          sum(if(a.is_idle = 1, 15, 0)) AS idle_seconds,
-          least(100.0, greatest(0.0,
-            0.35 * (100.0 * sum(if(a.is_idle = 0, 1, 0)) / nullIf(count(), 0)) +
-            0.20 * least(100.0, 15.0 * ln(1 + (((sum(a.keyboard_count) + sum(a.mouse_clicks)) / nullIf(count() * 15 / 60, 0)) / 2.0))) +
-            0.30 * ifNull(
-              100.0 * greatest(0.0, least(1.0, ((any(app.weighted_seconds) / nullIf(any(app.app_total_seconds), 0)) - 0.2) / 0.8)),
-              50.0
-            ) +
-            0.15 * ifNull(
-              100.0 * greatest(0.0, least(1.0, ((any(web.weighted_seconds) / nullIf(any(web.web_total_seconds), 0)) - 0.2) / 0.8)),
-              50.0
-            )
-          )) AS productivity_score,
-          now() AS created_at
-        FROM contractor_activity_15s a
-        LEFT JOIN (
-          SELECT 
-            e.session_id,
-            e.agent_id,
-            sum(JSONExtractFloat(e.payload, 'AppUsage', app) * ifNull(d.weight, 0.5)) AS weighted_seconds,
-            sum(JSONExtractFloat(e.payload, 'AppUsage', app)) AS app_total_seconds
-          FROM events_raw e
-          ARRAY JOIN JSONExtractKeys(e.payload, 'AppUsage') AS app
-          LEFT JOIN apps_dimension d ON d.name = app
-          GROUP BY e.session_id, e.agent_id
-        ) app ON app.session_id = a.session_id AND coalesce(app.agent_id, '') = coalesce(a.agent_id, '')
-        LEFT JOIN (
-          SELECT 
-            e.session_id,
-            e.agent_id,
-            sum(
-              JSONExtractFloat(e.payload, 'browser', dc) *
-              ifNull(d.weight, 1)
-            ) AS weighted_seconds,
-            sum(JSONExtractFloat(e.payload, 'browser', dc)) AS web_total_seconds
-          FROM events_raw e
-          ARRAY JOIN JSONExtractKeys(e.payload, 'browser') AS dc
-          LEFT JOIN domains_dimension d ON d.domain = dc
-          GROUP BY e.session_id, e.agent_id
-        ) web ON web.session_id = a.session_id AND coalesce(web.agent_id, '') = coalesce(a.agent_id, '')
-        ${sessionFilter}
-        GROUP BY a.session_id, a.agent_id
-        SETTINGS max_partitions_per_insert_block=1000
-      `;
+      const insertQuery = this.buildSessionSummaryInsertQuery(
+        innerScope,
+        outerFilter,
+      );
 
       await this.clickHouseService.command(insertQuery);
 
@@ -832,74 +1059,14 @@ export class EtlService {
           AND ${toDateTZ('session_start')} <= toDate('${toStr}')
       `);
 
-      // 2) Insertar nuevamente todas las sesiones del rango desde contractor_activity_15s
-      const insertQuery = `
-        INSERT INTO session_summary (
-          session_id,
-          contractor_id,
-          agent_id,
-          session_start,
-          session_end,
-          total_seconds,
-          active_seconds,
-          idle_seconds,
-          productivity_score,
-          created_at
-        )
-        SELECT
-          a.session_id,
-          any(a.contractor_id) AS contractor_id,
-          any(a.agent_id) AS agent_id,
-          min(a.beat_timestamp) AS session_start,
-          max(a.beat_timestamp) AS session_end,
-          count() * 15 AS total_seconds,
-          sum(if(a.is_idle = 0, 15, 0)) AS active_seconds,
-          sum(if(a.is_idle = 1, 15, 0)) AS idle_seconds,
-          least(100.0, greatest(0.0,
-            0.35 * (100.0 * sum(if(a.is_idle = 0, 1, 0)) / nullIf(count(), 0)) +
-            0.20 * least(100.0, 15.0 * ln(1 + (((sum(a.keyboard_count) + sum(a.mouse_clicks)) / nullIf(count() * 15 / 60, 0)) / 2.0))) +
-            0.30 * ifNull(
-              100.0 * greatest(0.0, least(1.0, ((any(app.weighted_seconds) / nullIf(any(app.app_total_seconds), 0)) - 0.2) / 0.8)),
-              50.0
-            ) +
-            0.15 * ifNull(
-              100.0 * greatest(0.0, least(1.0, ((any(web.weighted_seconds) / nullIf(any(web.web_total_seconds), 0)) - 0.2) / 0.8)),
-              50.0
-            )
-          )) AS productivity_score,
-          now() AS created_at
-        FROM contractor_activity_15s a
-        LEFT JOIN (
-          SELECT 
-            e.session_id,
-            e.agent_id,
-            sum(JSONExtractFloat(e.payload, 'AppUsage', app) * ifNull(d.weight, 0.5)) AS weighted_seconds,
-            sum(JSONExtractFloat(e.payload, 'AppUsage', app)) AS app_total_seconds
-          FROM events_raw e
-          ARRAY JOIN JSONExtractKeys(e.payload, 'AppUsage') AS app
-          LEFT JOIN apps_dimension d ON d.name = app
-          GROUP BY e.session_id, e.agent_id
-        ) app ON app.session_id = a.session_id AND coalesce(app.agent_id, '') = coalesce(a.agent_id, '')
-        LEFT JOIN (
-          SELECT 
-            e.session_id,
-            e.agent_id,
-            sum(
-              JSONExtractFloat(e.payload, 'browser', dc) *
-              ifNull(d.weight, 1)
-            ) AS weighted_seconds,
-            sum(JSONExtractFloat(e.payload, 'browser', dc)) AS web_total_seconds
-          FROM events_raw e
-          ARRAY JOIN JSONExtractKeys(e.payload, 'browser') AS dc
-          LEFT JOIN domains_dimension d ON d.domain = dc
-          GROUP BY e.session_id, e.agent_id
-        ) web ON web.session_id = a.session_id AND coalesce(web.agent_id, '') = coalesce(a.agent_id, '')
-        WHERE a.session_id IS NOT NULL
-          AND toDate(a.beat_timestamp, '${OPERATIONAL_TIMEZONE}') >= toDate('${fromStr}')
-          AND toDate(a.beat_timestamp, '${OPERATIONAL_TIMEZONE}') <= toDate('${toStr}')
-        GROUP BY a.session_id, a.agent_id
-        SETTINGS max_partitions_per_insert_block=1000
-      `;
+      // 2) Insertar nuevamente todas las sesiones del rango desde contractor_activity_15s.
+      // Reusa el mismo builder (score multiplicativo + real_idle + beat_duration), scopeando
+      // el rango de fechas en el scan interno; sin cláusula NOT IN (ya borramos el rango).
+      const innerScope = `AND session_id IS NOT NULL
+        AND toDate(beat_timestamp, '${OPERATIONAL_TIMEZONE}') >= toDate('${fromStr}')
+        AND toDate(beat_timestamp, '${OPERATIONAL_TIMEZONE}') <= toDate('${toStr}')`;
+
+      const insertQuery = this.buildSessionSummaryInsertQuery(innerScope, '');
 
       await this.clickHouseService.command(insertQuery);
 
@@ -978,13 +1145,12 @@ export class EtlService {
       const workdayStr = formatDateInTZ(workday);
       const query = `
         SELECT 
-          app_name,
-          sum(JSONExtractFloat(payload, 'AppUsage', app_name)) as seconds
+          tupleElement(app_kv, 1) AS app_name,
+          sum(tupleElement(app_kv, 2)) as seconds
         FROM events_raw
-        ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') as app_name
+        ARRAY JOIN ${appUsageMapSql()} AS app_kv
         WHERE contractor_id = '${contractorId}'
           AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') = '${workdayStr}'
-          AND JSONHas(payload, 'AppUsage')
         GROUP BY app_name
         HAVING seconds > 0
       `;
@@ -1017,13 +1183,12 @@ export class EtlService {
       const workdayStr = formatDateInTZ(workday);
       const query = `
         SELECT 
-          domain,
-          sum(JSONExtractFloat(payload, 'browser', domain)) as seconds
+          tupleElement(dom_kv, 1) AS domain,
+          sum(tupleElement(dom_kv, 2)) as seconds
         FROM events_raw
-        ARRAY JOIN JSONExtractKeys(payload, 'browser') as domain
+        ARRAY JOIN ${domainUsageMapSql()} AS dom_kv
         WHERE contractor_id = '${contractorId}'
           AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') = '${workdayStr}'
-          AND JSONHas(payload, 'browser')
         GROUP BY domain
         HAVING seconds > 0
       `;
@@ -1058,14 +1223,13 @@ export class EtlService {
       const toStr = this.formatDate(toDate);
       const query = `
         SELECT 
-          app_name,
-          sum(JSONExtractFloat(payload, 'AppUsage', app_name)) as seconds
+          tupleElement(app_kv, 1) AS app_name,
+          sum(tupleElement(app_kv, 2)) as seconds
         FROM events_raw
-        ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') as app_name
+        ARRAY JOIN ${appUsageMapSql()} AS app_kv
         WHERE contractor_id = '${contractorId}'
           AND timestamp >= '${fromStr}'
           AND timestamp <= '${toStr}'
-          AND JSONHas(payload, 'AppUsage')
         GROUP BY app_name
         HAVING seconds > 0
       `;
@@ -1100,14 +1264,13 @@ export class EtlService {
       const toStr = this.formatDate(toDate);
       const query = `
         SELECT 
-          domain,
-          sum(JSONExtractFloat(payload, 'browser', domain)) as seconds
+          tupleElement(dom_kv, 1) AS domain,
+          sum(tupleElement(dom_kv, 2)) as seconds
         FROM events_raw
-        ARRAY JOIN JSONExtractKeys(payload, 'browser') as domain
+        ARRAY JOIN ${domainUsageMapSql()} AS dom_kv
         WHERE contractor_id = '${contractorId}'
           AND timestamp >= '${fromStr}'
           AND timestamp <= '${toStr}'
-          AND JSONHas(payload, 'browser')
         GROUP BY domain
         HAVING seconds > 0
       `;

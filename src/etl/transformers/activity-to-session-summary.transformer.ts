@@ -3,6 +3,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ContractorActivity15sDto } from '../dto/contractor-activity-15s.dto';
 import { SessionSummaryDto } from '../dto/session-summary.dto';
 import { DimensionsService } from '../services/dimensions.service';
+import { ProductivityScoreService } from '../services/productivity-score.service';
 import {
   AppUsageData,
   BrowserUsageData,
@@ -18,7 +19,10 @@ export class ActivityToSessionSummaryTransformer {
   private readonly logger = new Logger(
     ActivityToSessionSummaryTransformer.name,
   );
-  constructor(private readonly dimensionsService: DimensionsService) {}
+  constructor(
+    private readonly dimensionsService: DimensionsService,
+    private readonly productivityScoreService: ProductivityScoreService,
+  ) {}
 
   aggregate(
     sessionId: string,
@@ -74,15 +78,14 @@ export class ActivityToSessionSummaryTransformer {
 
     if (process.env.ETL_DEBUG_LOGS === '1') {
       const sActive = totalBeats > 0 ? 100 * (activeBeats / totalBeats) : 0;
-      const inputsPerMinDbg =
-        minutes > 0 ? (totalKeyboard + totalMouse) / minutes : 0;
-      const sInputs = Math.min(100, 15 * Math.log(1 + inputsPerMinDbg / 2));
-      const sApps = this.calculateAppsScore(appUsage || []);
-      const sBrowser = this.calculateBrowserScore(browserUsage || []);
+      const { weighted, total } = this.computeQuality(
+        appUsage || [],
+        browserUsage || [],
+      );
+      const sQuality = total > 0 ? 100 * (weighted / total) : 0;
       this.logger.debug(
         `SessionSummary agg ${dto.session_id} ` +
-          `S_active=${sActive.toFixed(2)} S_inputs=${sInputs.toFixed(2)} ` +
-          `S_apps=${sApps.toFixed(2)} S_browser=${sBrowser.toFixed(2)} ` +
+          `S_active=${sActive.toFixed(2)} S_quality=${sQuality.toFixed(2)} ` +
           `score=${dto.productivity_score.toFixed(2)}`,
       );
     }
@@ -91,90 +94,45 @@ export class ActivityToSessionSummaryTransformer {
   }
 
   /**
-   * Calcula el productivity_score usando la fórmula multi-factor.
-   * Ver PRODUCTIVITY_SCORE.md para detalles.
+   * Calcula el productivity_score (fórmula multiplicativa unificada).
+   * totalKeyboard/totalMouse/minutes se mantienen por compatibilidad de firma
+   * pero ya no influyen en el score.
    */
   private calculateProductivityScore(
     activeBeats: number,
     totalBeats: number,
-    totalKeyboard: number,
-    totalMouse: number,
-    minutes: number,
+    _totalKeyboard: number,
+    _totalMouse: number,
+    _minutes: number,
     appUsage: AppUsageData[],
     browserUsage: BrowserUsageData[],
   ): number {
-    // 1. S_active: Tiempo activo vs idle (35%)
-    const sActive = totalBeats > 0 ? 100 * (activeBeats / totalBeats) : 0;
-
-    // 2. S_inputs: Intensidad de inputs (20%)
-    const inputsPerMin =
-      minutes > 0 ? (totalKeyboard + totalMouse) / minutes : 0;
-    const sInputs = Math.min(100, 20 * Math.log(1 + inputsPerMin));
-
-    // 3. S_apps: Apps productivas (30%)
-    const sApps = this.calculateAppsScore(appUsage);
-
-    // 4. S_browser: Web productiva (15%)
-    const sBrowser = this.calculateBrowserScore(browserUsage);
-
-    // Pesos (configurables)
-    const w1 = 0.35; // S_active
-    const w2 = 0.2; // S_inputs
-    const w3 = 0.3; // S_apps
-    const w4 = 0.15; // S_browser
-
-    // Score final ponderado
-    const score = w1 * sActive + w2 * sInputs + w3 * sApps + w4 * sBrowser;
-
-    // Normalizar a 0-100
-    return Math.min(100, Math.max(0, score));
+    const { weighted, total } = this.computeQuality(appUsage, browserUsage);
+    return this.productivityScoreService.calculate({
+      activeBeats,
+      totalBeats,
+      weightedQualitySeconds: weighted,
+      totalQualitySeconds: total,
+    });
   }
 
-  /**
-   * Calcula S_apps: score basado en apps productivas.
-   */
-  private calculateAppsScore(appUsage: AppUsageData[]): number {
-    if (appUsage.length === 0) {
-      return 50; // Default si no hay datos
-    }
-
-    let weightedSeconds = 0;
-    let totalSeconds = 0;
-
+  /** apps + dominios en una sola bolsa de calidad (Σ seconds*weight, Σ seconds). */
+  private computeQuality(
+    appUsage: AppUsageData[],
+    browserUsage: BrowserUsageData[],
+  ): { weighted: number; total: number } {
+    let weighted = 0;
+    let total = 0;
     for (const usage of appUsage) {
       const weight = this.dimensionsService.getAppWeight(usage.appName);
-      weightedSeconds += usage.seconds * weight;
-      totalSeconds += usage.seconds;
+      weighted += usage.seconds * weight;
+      total += usage.seconds;
     }
-
-    if (totalSeconds === 0) {
-      return 50;
-    }
-
-    return 100 * (weightedSeconds / totalSeconds);
-  }
-
-  /**
-   * Calcula S_browser: score basado en dominios productivos.
-   */
-  private calculateBrowserScore(browserUsage: BrowserUsageData[]): number {
-    if (browserUsage.length === 0) {
-      return 50; // Default si no hay datos
-    }
-
-    let weightedSeconds = 0;
-    let totalSeconds = 0;
-
     for (const usage of browserUsage) {
       const weight = this.dimensionsService.getDomainWeight(usage.domain);
-      weightedSeconds += usage.seconds * weight;
-      totalSeconds += usage.seconds;
+      weighted += usage.seconds * weight;
+      total += usage.seconds;
     }
-
-    if (totalSeconds === 0) {
-      return 50;
-    }
-
-    return 100 * (weightedSeconds / totalSeconds);
+    return { weighted, total };
   }
 }

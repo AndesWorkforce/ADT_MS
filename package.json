@@ -26,7 +26,12 @@
     "clear:clickhouse": "ts-node -r tsconfig-paths/register scripts/clear-clickhouse-data.ts",
     "test:redis": "ts-node -r tsconfig-paths/register scripts/test-redis-connection.ts",
     "ping:redis": "ts-node -r tsconfig-paths/register scripts/ping-redis.ts",
-    "flush:cache": "ts-node -r tsconfig-paths/register scripts/flush-cache.ts"
+    "flush:cache": "ts-node -r tsconfig-paths/register scripts/flush-cache.ts",
+    "sync:sessions-ch": "ts-node -r tsconfig-paths/register scripts/sync-postgres-sessions-to-clickhouse.ts",
+    "generate:etl-hour": "ts-node -r tsconfig-paths/register scripts/generate-etl-test-hour.ts",
+    "generate:etl-batch": "ts-node -r tsconfig-paths/register scripts/generate-etl-test-batch.ts",
+    "seed:dimensions": "ts-node -r tsconfig-paths/register scripts/seed-dimensions.ts",
+    "reprocess:day": "ts-node -r tsconfig-paths/register scripts/reprocess-day.ts"
   },
   "dependencies": {
     "@clickhouse/client": "^0.2.7",

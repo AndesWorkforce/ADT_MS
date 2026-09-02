@@ -9,6 +9,7 @@ import { DailyMetricsService } from './services/daily-metrics.service';
 import { DimensionsInitService } from './services/dimensions-init.service';
 import { DimensionsService } from './services/dimensions.service';
 import { EtlService } from './services/etl.service';
+import { ProductivityScoreService } from './services/productivity-score.service';
 import { RankingService } from './services/ranking.service';
 import { RealtimeMetricsService } from './services/realtime-metrics.service';
 import { ActivityRepository } from './services/activity-repository.service';
@@ -33,6 +34,7 @@ import { EventsToActivityTransformer } from './transformers/events-to-activity.t
     DimensionsService,
     DimensionsInitService,
     EtlService,
+    ProductivityScoreService,
     UsageDataService,
     EventsToActivityTransformer,
     ActivityToDailyMetricsTransformer,
@@ -49,6 +51,7 @@ import { EventsToActivityTransformer } from './transformers/events-to-activity.t
     RealtimeMetricsService,
     DimensionsService,
     EtlService,
+    ProductivityScoreService,
     UsageDataService,
     EventsToActivityTransformer,
     ActivityToDailyMetricsTransformer,

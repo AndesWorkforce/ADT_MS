@@ -56,3 +56,6 @@ pids
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 .env.backup
+
+# Estado de corridas puntuales de backfill (no es codigo)
+scripts/*.progress.json

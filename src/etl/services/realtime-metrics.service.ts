@@ -468,13 +468,13 @@ export class RealtimeMetricsService {
       SELECT 
         agent_id,
         domain,
-        sum(JSONExtractFloat(payload, 'browser', domain)) AS seconds
+        sum(JSONExtractFloat(payload, 'DomainUsage', domain)) AS seconds
       FROM events_raw
-      ARRAY JOIN JSONExtractKeys(payload, 'browser') AS domain
+      ARRAY JOIN JSONExtractKeys(payload, 'DomainUsage') AS domain
       WHERE contractor_id = '${contractorId}'
         AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') = '${workdayStr}'
         AND agent_id IN (${agentIdsList})
-        AND JSONHas(payload, 'browser')
+        AND JSONHas(payload, 'DomainUsage')
       GROUP BY agent_id, domain
       HAVING seconds > 0
     `;
@@ -582,14 +582,14 @@ export class RealtimeMetricsService {
       SELECT 
         agent_id,
         domain,
-        sum(JSONExtractFloat(payload, 'browser', domain)) AS seconds
+        sum(JSONExtractFloat(payload, 'DomainUsage', domain)) AS seconds
       FROM events_raw
-      ARRAY JOIN JSONExtractKeys(payload, 'browser') AS domain
+      ARRAY JOIN JSONExtractKeys(payload, 'DomainUsage') AS domain
       WHERE contractor_id = '${contractorId}'
         AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') >= '${fromStr}'
         AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') <= '${toStr}'
         AND agent_id IN (${agentIdsList})
-        AND JSONHas(payload, 'browser')
+        AND JSONHas(payload, 'DomainUsage')
       GROUP BY agent_id, domain
       HAVING seconds > 0
     `;

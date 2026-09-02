@@ -4,6 +4,7 @@ import { formatDateInTZ } from 'config';
 import { ContractorActivity15sDto } from '../dto/contractor-activity-15s.dto';
 import { ContractorDailyMetricsDto } from '../dto/contractor-daily-metrics.dto';
 import { DimensionsService } from '../services/dimensions.service';
+import { ProductivityScoreService } from '../services/productivity-score.service';
 
 /**
  * Interfaces auxiliares para pasar datos de AppUsage y Browser
@@ -41,16 +42,22 @@ export interface BrowserUsageData {
 
 /**
  * Agrega beats de 15s (contractor_activity_15s) a métricas diarias por contractor.
- * Implementa la fórmula multi-factor de productividad según PRODUCTIVITY_SCORE.md:
- * - S_active: tiempo activo vs idle (35%)
- * - S_inputs: intensidad de inputs (20%)
- * - S_apps: apps productivas (30%)
- * - S_browser: web productiva (15%)
+ * Usa la fórmula multiplicativa unificada (ProductivityScoreService):
+ *   score = S_active * S_quality / 100
+ * - S_active: tiempo activo vs idle
+ * - S_quality: calidad de apps + dominios ponderados
+ *
+ * NOTA: este camino (realtime) usa is_idle por beat sin el grace period de 2 min
+ * que sí aplica el ETL batch (contractor_daily_metrics). Es una aproximación
+ * "en vivo"; la métrica oficial persistida usa real_idle.
  */
 @Injectable()
 export class ActivityToDailyMetricsTransformer {
   private readonly logger = new Logger(ActivityToDailyMetricsTransformer.name);
-  constructor(private readonly dimensionsService: DimensionsService) {}
+  constructor(
+    private readonly dimensionsService: DimensionsService,
+    private readonly productivityScoreService: ProductivityScoreService,
+  ) {}
 
   aggregate(
     contractorId: string,
@@ -102,18 +109,17 @@ export class ActivityToDailyMetricsTransformer {
       browserUsage || [],
     );
 
-    // Debug opcional de sub-scores
+    // Debug opcional
     if (process.env.ETL_DEBUG_LOGS === '1') {
       const sActive = totalBeats > 0 ? 100 * (activeBeats / totalBeats) : 0;
-      const inputsPerMinDbg =
-        minutes > 0 ? (totalKeyboard + totalMouse) / minutes : 0;
-      const sInputs = Math.min(100, 15 * Math.log(1 + inputsPerMinDbg / 2));
-      const sApps = this.calculateAppsScore(appUsage || []);
-      const sBrowser = this.calculateBrowserScore(browserUsage || []);
+      const { weighted, total } = this.computeQuality(
+        appUsage || [],
+        browserUsage || [],
+      );
+      const sQuality = total > 0 ? 100 * (weighted / total) : 0;
       this.logger.debug(
         `DailyMetrics agg ${dto.contractor_id} ${formatDateInTZ(dto.workday)} ` +
-          `S_active=${sActive.toFixed(2)} S_inputs=${sInputs.toFixed(2)} ` +
-          `S_apps=${sApps.toFixed(2)} S_browser=${sBrowser.toFixed(2)} ` +
+          `S_active=${sActive.toFixed(2)} S_quality=${sQuality.toFixed(2)} ` +
           `score=${dto.productivity_score.toFixed(2)}`,
       );
     }
@@ -122,97 +128,55 @@ export class ActivityToDailyMetricsTransformer {
   }
 
   /**
-   * Calcula el productivity_score usando la fórmula multi-factor.
-   * Ver PRODUCTIVITY_SCORE.md para detalles.
-   * Expuesto como público para ser reutilizado por RealtimeMetricsService en el flujo bulk.
+   * Calcula el productivity_score (fórmula multiplicativa unificada).
+   * Expuesto como público para ser reutilizado por RealtimeMetricsService.
+   *
+   * Los parámetros totalKeyboard/totalMouse/minutes se mantienen en la firma por
+   * compatibilidad con los callers existentes, pero ya NO influyen en el score
+   * (S_inputs fue eliminado: los inputs se muestran como valor crudo en la UI).
    */
   calculateProductivityScore(
     activeBeats: number,
     totalBeats: number,
-    totalKeyboard: number,
-    totalMouse: number,
-    minutes: number,
+    _totalKeyboard: number,
+    _totalMouse: number,
+    _minutes: number,
     appUsage: AppUsageData[],
     browserUsage: BrowserUsageData[],
   ): number {
-    // 1. S_active: Tiempo activo vs idle (35%)
-    const sActive = totalBeats > 0 ? 100 * (activeBeats / totalBeats) : 0;
-
-    // 2. S_inputs: Intensidad de inputs (20%)
-    const inputsPerMin =
-      minutes > 0 ? (totalKeyboard + totalMouse) / minutes : 0;
-    const sInputs = Math.min(100, 20 * Math.log(1 + inputsPerMin));
-
-    // 3. S_apps: Apps productivas (30%)
-    const sApps = this.calculateAppsScore(appUsage);
-
-    // 4. S_browser: Web productiva (15%)
-    const sBrowser = this.calculateBrowserScore(browserUsage);
-
-    // Pesos (configurables)
-    const w1 = 0.35; // S_active
-    const w2 = 0.2; // S_inputs
-    const w3 = 0.3; // S_apps
-    const w4 = 0.15; // S_browser
-
-    // Score final ponderado
-    const score = w1 * sActive + w2 * sInputs + w3 * sApps + w4 * sBrowser;
-
-    // Normalizar a 0-100
-    return Math.min(100, Math.max(0, score));
+    const { weighted, total } = this.computeQuality(appUsage, browserUsage);
+    return this.productivityScoreService.calculate({
+      activeBeats,
+      totalBeats,
+      weightedQualitySeconds: weighted,
+      totalQualitySeconds: total,
+    });
   }
 
   /**
-   * Calcula S_apps: score basado en apps productivas.
-   * Normalizado a 0-100.
+   * Combina apps + dominios en una sola "bolsa de calidad":
+   * weighted = Σ(seconds * weight), total = Σ(seconds).
+   * El weight de apps viene de DimensionsService.getAppWeight y el de dominios
+   * de getDomainWeight. Sin datos → total = 0 (el score usa solo S_active).
    */
-  private calculateAppsScore(appUsage: AppUsageData[]): number {
-    if (appUsage.length === 0) {
-      return 50; // Default si no hay datos
-    }
-
-    let weightedSeconds = 0;
-    let totalSeconds = 0;
+  private computeQuality(
+    appUsage: AppUsageData[],
+    browserUsage: BrowserUsageData[],
+  ): { weighted: number; total: number } {
+    let weighted = 0;
+    let total = 0;
 
     for (const usage of appUsage) {
       const weight = this.dimensionsService.getAppWeight(usage.appName);
-      weightedSeconds += usage.seconds * weight;
-      totalSeconds += usage.seconds;
+      weighted += usage.seconds * weight;
+      total += usage.seconds;
     }
-
-    if (totalSeconds === 0) {
-      return 50;
-    }
-
-    // Normalizar a 0-100 (los pesos pueden ser > 1.0, así que el resultado puede exceder 100)
-    const score = 100 * (weightedSeconds / totalSeconds);
-    return Math.min(100, Math.max(0, score));
-  }
-
-  /**
-   * Calcula S_browser: score basado en dominios productivos.
-   * Normalizado a 0-100.
-   */
-  private calculateBrowserScore(browserUsage: BrowserUsageData[]): number {
-    if (browserUsage.length === 0) {
-      return 50; // Default si no hay datos
-    }
-
-    let weightedSeconds = 0;
-    let totalSeconds = 0;
-
     for (const usage of browserUsage) {
       const weight = this.dimensionsService.getDomainWeight(usage.domain);
-      weightedSeconds += usage.seconds * weight;
-      totalSeconds += usage.seconds;
+      weighted += usage.seconds * weight;
+      total += usage.seconds;
     }
 
-    if (totalSeconds === 0) {
-      return 50;
-    }
-
-    // Normalizar a 0-100 (los pesos pueden ser > 1.0, así que el resultado puede exceder 100)
-    const score = 100 * (weightedSeconds / totalSeconds);
-    return Math.min(100, Math.max(0, score));
+    return { weighted, total };
   }
 }

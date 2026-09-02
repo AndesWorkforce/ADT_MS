@@ -17,26 +17,30 @@ const CLICKHOUSE_PASSWORD = process.env.CLICKHOUSE_PASSWORD || '';
 const CLICKHOUSE_DATABASE = process.env.CLICKHOUSE_DATABASE || 'metrics_db';
 
 // Apps dimension data
+// OJO: la columna de apps_dimension es `name`, NO `app_name`. Con el nombre
+// equivocado, JSONEachRow descarta el campo en silencio y todas las filas
+// quedan con name='' -> el JOIN del ETL nunca matchea y el peso de apps
+// queda inerte. Ver scripts/seed-dimensions.ts.
 const APPS = [
   // Productivas
-  { app_name: 'Code', category: 'productive', weight: 1.2 },
-  { app_name: 'Visual Studio Code', category: 'productive', weight: 1.2 },
-  { app_name: 'IntelliJ', category: 'productive', weight: 1.2 },
-  { app_name: 'Word', category: 'productive', weight: 1.0 },
-  { app_name: 'Excel', category: 'productive', weight: 1.0 },
-  { app_name: 'PowerPoint', category: 'productive', weight: 1.0 },
-  { app_name: 'Notion', category: 'productive', weight: 1.0 },
+  { name: 'Code', category: 'productive', weight: 1.2 },
+  { name: 'Visual Studio Code', category: 'productive', weight: 1.2 },
+  { name: 'IntelliJ', category: 'productive', weight: 1.2 },
+  { name: 'Word', category: 'productive', weight: 1.0 },
+  { name: 'Excel', category: 'productive', weight: 1.0 },
+  { name: 'PowerPoint', category: 'productive', weight: 1.0 },
+  { name: 'Notion', category: 'productive', weight: 1.0 },
   // Neutras
-  { app_name: 'Slack', category: 'neutral', weight: 0.8 },
-  { app_name: 'Teams', category: 'neutral', weight: 0.8 },
-  { app_name: 'Chrome', category: 'neutral', weight: 0.6 },
-  { app_name: 'Edge', category: 'neutral', weight: 0.6 },
-  { app_name: 'Firefox', category: 'neutral', weight: 0.6 },
+  { name: 'Slack', category: 'neutral', weight: 0.8 },
+  { name: 'Teams', category: 'neutral', weight: 0.8 },
+  { name: 'Chrome', category: 'neutral', weight: 0.6 },
+  { name: 'Edge', category: 'neutral', weight: 0.6 },
+  { name: 'Firefox', category: 'neutral', weight: 0.6 },
   // No productivas
-  { app_name: 'YouTube', category: 'non_productive', weight: 0.2 },
-  { app_name: 'Spotify', category: 'non_productive', weight: 0.3 },
-  { app_name: 'Discord', category: 'non_productive', weight: 0.4 },
-  { app_name: 'Games', category: 'non_productive', weight: 0.1 },
+  { name: 'YouTube', category: 'non_productive', weight: 0.2 },
+  { name: 'Spotify', category: 'non_productive', weight: 0.3 },
+  { name: 'Discord', category: 'non_productive', weight: 0.4 },
+  { name: 'Games', category: 'non_productive', weight: 0.1 },
 ];
 
 // Domains dimension data

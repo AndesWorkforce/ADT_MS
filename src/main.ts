@@ -37,6 +37,14 @@ async function bootstrap() {
         servers: [`nats://${envs.natsHost}:${envs.natsPort}`],
         user: envs.natsUsername,
         pass: envs.natsPassword,
+        // Queue group: hace que cada mensaje lo procese UNA sola instancia.
+        // Sin esto NATS entrega a TODAS las suscriptas, y con dos instancias
+        // (incluido el solapamiento de un rolling deploy) cada beat se guarda
+        // duplicado. Medido: 2 instancias de EVENTS_MS + 2 de ADT_MS => cada
+        // heartbeat 4 veces en events_raw, con teclado y mouse inflados 4x.
+        // El nombre tiene que ser DISTINTO por servicio: dos servicios con el
+        // mismo grupo suscriptos al mismo subject se roban los mensajes.
+        queue: 'adt-ms',
       },
       logger: logLevels,
     },

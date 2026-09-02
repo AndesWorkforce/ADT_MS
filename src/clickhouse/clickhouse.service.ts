@@ -772,6 +772,13 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
           is_idle UInt8,
           keyboard_count UInt32,
           mouse_clicks UInt32,
+          beat_duration Float32 DEFAULT 15,
+          power_state LowCardinality(String) DEFAULT 'active',
+          browser_source LowCardinality(String) DEFAULT '',
+          mic_active UInt8 DEFAULT 0,
+          cam_active UInt8 DEFAULT 0,
+          call_app_active UInt8 DEFAULT 0,
+          payload_version UInt8 DEFAULT 1,
           workday Date DEFAULT toDate(beat_timestamp, '${OPERATIONAL_TIMEZONE}'),
           created_at DateTime DEFAULT now()
         ) ENGINE = MergeTree()
@@ -780,6 +787,32 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
         TTL beat_timestamp + INTERVAL 365 DAY
       `);
       this.logger.log('✅ Table contractor_activity_15s verified/created');
+
+      // Migración: agregar columnas del payload v2 (beat_duration, power_state,
+      // browser_source, mic/cam/call_app, payload_version) para tablas existentes.
+      // Idempotente: ADD COLUMN IF NOT EXISTS. Backward-compatible con payloads v1
+      // gracias a los DEFAULTs (beat_duration=15, power_state='active', version=1).
+      try {
+        const activityMigrations = [
+          `ALTER TABLE ${dbName}.contractor_activity_15s ADD COLUMN IF NOT EXISTS beat_duration Float32 DEFAULT 15 AFTER mouse_clicks`,
+          `ALTER TABLE ${dbName}.contractor_activity_15s ADD COLUMN IF NOT EXISTS power_state LowCardinality(String) DEFAULT 'active' AFTER beat_duration`,
+          `ALTER TABLE ${dbName}.contractor_activity_15s ADD COLUMN IF NOT EXISTS browser_source LowCardinality(String) DEFAULT '' AFTER power_state`,
+          `ALTER TABLE ${dbName}.contractor_activity_15s ADD COLUMN IF NOT EXISTS mic_active UInt8 DEFAULT 0 AFTER browser_source`,
+          `ALTER TABLE ${dbName}.contractor_activity_15s ADD COLUMN IF NOT EXISTS cam_active UInt8 DEFAULT 0 AFTER mic_active`,
+          `ALTER TABLE ${dbName}.contractor_activity_15s ADD COLUMN IF NOT EXISTS call_app_active UInt8 DEFAULT 0 AFTER cam_active`,
+          `ALTER TABLE ${dbName}.contractor_activity_15s ADD COLUMN IF NOT EXISTS payload_version UInt8 DEFAULT 1 AFTER call_app_active`,
+        ];
+        for (const q of activityMigrations) {
+          await this.command(q);
+        }
+        this.logger.log(
+          '✅ contractor_activity_15s: v2 columns verified/added',
+        );
+      } catch {
+        this.logger.debug(
+          'contractor_activity_15s v2 columns already exist or migration skipped',
+        );
+      }
 
       // Crear tabla contractor_daily_metrics
       // Agregación diaria por contractor con productivity_score
@@ -801,6 +834,7 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
           productivity_score Float64,
           app_usage Map(String, UInt64) DEFAULT map(),
           browser_usage Map(String, UInt64) DEFAULT map(),
+          metrics_version UInt8 DEFAULT 2,
           created_at DateTime DEFAULT now()
         ) ENGINE = ReplacingMergeTree(created_at)
         PARTITION BY workday
@@ -816,11 +850,17 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
           ADD COLUMN IF NOT EXISTS app_usage Map(String, UInt64) DEFAULT map()
         `);
         await this.command(`
-          ALTER TABLE ${dbName}.contractor_daily_metrics 
+          ALTER TABLE ${dbName}.contractor_daily_metrics
           ADD COLUMN IF NOT EXISTS browser_usage Map(String, UInt64) DEFAULT map()
         `);
+        // metrics_version: 1 = payloads viejos (agente legacy), 2 = agente v2.
+        // Default 2 en filas nuevas; el ETL lo setea explícitamente según el payload.
+        await this.command(`
+          ALTER TABLE ${dbName}.contractor_daily_metrics
+          ADD COLUMN IF NOT EXISTS metrics_version UInt8 DEFAULT 2
+        `);
         this.logger.log(
-          '✅ Columns app_usage and browser_usage verified/added',
+          '✅ Columns app_usage, browser_usage, metrics_version verified/added',
         );
       } catch {
         // Ignorar si las columnas ya existen
@@ -842,6 +882,7 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
           active_seconds UInt32,
           idle_seconds UInt32,
           productivity_score Float64,
+          metrics_version UInt8 DEFAULT 2,
           created_at DateTime DEFAULT now()
         ) ENGINE = MergeTree()
         PARTITION BY toDate(session_start)
@@ -849,6 +890,18 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
         TTL session_start + INTERVAL 365 DAY
       `);
       this.logger.log('✅ Table session_summary verified/created');
+
+      // Migración: metrics_version en session_summary
+      try {
+        await this.command(`
+          ALTER TABLE ${dbName}.session_summary ADD COLUMN IF NOT EXISTS metrics_version UInt8 DEFAULT 2
+        `);
+        this.logger.log('✅ session_summary: metrics_version verified/added');
+      } catch {
+        this.logger.debug(
+          'session_summary metrics_version already present or migration skipped',
+        );
+      }
 
       // Migración: añadir agent_id si la tabla ya existía sin ella
       try {

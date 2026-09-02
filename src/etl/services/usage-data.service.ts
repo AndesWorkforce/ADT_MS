@@ -170,12 +170,12 @@ export class UsageDataService {
     try {
       const query = `
         SELECT 
-          JSONExtractString(payload, 'browser') AS browser_json,
+          JSONExtractString(payload, 'DomainUsage') AS browser_json,
           timestamp
         FROM events_raw
         WHERE contractor_id = '${contractorId}'
           AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') = '${workdayStr}'
-          AND JSONHas(payload, 'browser')
+          AND JSONHas(payload, 'DomainUsage')
           ${agentFilter}
         ORDER BY timestamp
       `;
@@ -302,13 +302,13 @@ export class UsageDataService {
     try {
       const query = `
         SELECT 
-          JSONExtractString(payload, 'browser') AS browser_json,
+          JSONExtractString(payload, 'DomainUsage') AS browser_json,
           timestamp
         FROM events_raw
         WHERE contractor_id = '${contractorId}'
           AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') >= '${fromStr}'
           AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') <= '${toStr}'
-          AND JSONHas(payload, 'browser')
+          AND JSONHas(payload, 'DomainUsage')
           ${agentFilter}
         ORDER BY timestamp
         ${useLimit ? `LIMIT ${useLimit}` : ''}
@@ -415,13 +415,13 @@ export class UsageDataService {
       const query = `
         SELECT 
           domain,
-          sum(JSONExtractFloat(payload, 'browser', domain)) AS seconds
+          sum(JSONExtractFloat(payload, 'DomainUsage', domain)) AS seconds
         FROM events_raw
-        ARRAY JOIN JSONExtractKeys(payload, 'browser') AS domain
+        ARRAY JOIN JSONExtractKeys(payload, 'DomainUsage') AS domain
         WHERE contractor_id = '${contractorId}'
           AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') >= '${fromStr}'
           AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') <= '${toStr}'
-          AND JSONHas(payload, 'browser')
+          AND JSONHas(payload, 'DomainUsage')
         GROUP BY domain
         HAVING seconds > 0
         ORDER BY seconds DESC
@@ -555,13 +555,13 @@ export class UsageDataService {
         SELECT 
           contractor_id,
           domain,
-          sum(JSONExtractFloat(payload, 'browser', domain)) AS seconds
+          sum(JSONExtractFloat(payload, 'DomainUsage', domain)) AS seconds
         FROM events_raw
-        ARRAY JOIN JSONExtractKeys(payload, 'browser') AS domain
+        ARRAY JOIN JSONExtractKeys(payload, 'DomainUsage') AS domain
         WHERE contractor_id IN (${contractorIdsList})
           AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') >= '${fromStr}'
           AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') <= '${toStr}'
-          AND JSONHas(payload, 'browser')
+          AND JSONHas(payload, 'DomainUsage')
         GROUP BY contractor_id, domain
         HAVING seconds > 0
         ORDER BY contractor_id, seconds DESC

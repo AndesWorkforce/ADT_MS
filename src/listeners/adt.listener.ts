@@ -9,6 +9,7 @@ import {
   parseCalendarDayEnd,
   parseCalendarDayStart,
   parseOptionalCalendarDayStart,
+  resolvePeriodRange,
 } from 'config';
 
 import { ActivityService } from '../etl/services/activity.service';
@@ -865,6 +866,68 @@ export class AdtListener {
   }
 
   /**
+   * Recalcula métricas diarias YA EXISTENTES para un período elegido.
+   *
+   * A diferencia de `adt.processDailyMetrics` (idempotente: saltea los días ya
+   * poblados), este endpoint borra y recalcula. Es el camino para propagar un
+   * cambio de fórmula o de pesos al histórico ya persistido.
+   *
+   * El período se elige con UNO de estos campos (precedencia: day > month > year > from/to):
+   *   { day:   '2026-08-15' }   → un día
+   *   { month: '2026-08'    }   → mes completo
+   *   { year:  '2026'       }   → año completo
+   *   { from:  '2026-08-01', to: '2026-08-31' } → rango explícito
+   *
+   * Opcionalmente `contractorIds` acota el recálculo a ciertos contratistas.
+   *
+   * Corre de forma SÍNCRONA (sin cola): un período largo puede tardar. Preferí
+   * ir mes a mes antes que disparar un año entero de una.
+   */
+  @MessagePattern(getMessagePattern('adt.backfillDailyMetrics'))
+  async backfillDailyMetrics(
+    @Payload()
+    data: {
+      day?: string;
+      month?: string;
+      year?: string | number;
+      from?: string;
+      to?: string;
+      contractorIds?: string[];
+    },
+  ) {
+    try {
+      const { contractorIds, ...selector } = data ?? {};
+      const { from, to, label } = resolvePeriodRange(selector);
+
+      this.logger.log(
+        `♻️ Backfill daily metrics requested for ${label}` +
+          `${contractorIds?.length ? ` (${contractorIds.length} contractors)` : ' (all contractors)'}`,
+      );
+
+      const metrics = await this.etlService.processActivityToDailyMetrics(
+        undefined,
+        from,
+        to,
+        contractorIds?.length ? contractorIds : undefined,
+        true, // force: borrar y recalcular aunque ya existan
+      );
+
+      return {
+        message: `Daily metrics recomputed for ${label}`,
+        period: {
+          label,
+          from: formatDateInTZ(from),
+          to: formatDateInTZ(to),
+        },
+        count: metrics.length,
+      };
+    } catch (error) {
+      logError(this.logger, 'Error in backfillDailyMetrics', error);
+      throw error;
+    }
+  }
+
+  /**
    * Ejecuta ETL para procesar resúmenes de sesión.
    *
    * Si USE_ETL_QUEUE=true, encola el job en BullMQ para procesamiento asíncrono.
@@ -876,28 +939,45 @@ export class AdtListener {
     data: {
       sessionId?: string;
       contractorId?: string;
+      day?: string;
+      month?: string;
+      year?: string | number;
       from?: string;
       to?: string;
     },
   ) {
     try {
-      const { sessionId, contractorId, from, to } = data;
+      const { sessionId, contractorId, day, month, year, from, to } = data;
 
-      // Nuevo modo: rango de fechas completo (from/to) para TODOS los contractors.
-      // En este modo, se ejecuta de forma síncrona y NO se usa la cola BullMQ.
-      if (from && to) {
-        const fromDay = from.split('T')[0];
-        const toDay = to.split('T')[0];
+      // Modo período: recálculo completo para TODOS los contractors.
+      // Acepta el mismo selector que `adt.backfillDailyMetrics`
+      // (day / month / year / from+to). Síncrono, sin cola BullMQ.
+      if (day || month || year || from || to) {
+        const {
+          from: fromDate,
+          to: toDate,
+          label,
+        } = resolvePeriodRange({
+          day,
+          month,
+          year,
+          from,
+          to,
+        });
 
         const count =
           await this.etlService.reprocessSessionSummariesForDateRange(
-            fromDay,
-            toDay,
+            formatDateInTZ(fromDate),
+            formatDateInTZ(toDate),
           );
 
         return {
-          message:
-            'Session summaries processed successfully for date range (full recompute)',
+          message: `Session summaries recomputed for ${label} (full recompute)`,
+          period: {
+            label,
+            from: formatDateInTZ(fromDate),
+            to: formatDateInTZ(toDate),
+          },
           queued: false,
           count,
         };
