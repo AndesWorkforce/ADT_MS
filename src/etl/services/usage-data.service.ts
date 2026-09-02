@@ -3,6 +3,11 @@
 import { formatDateInTZ, OPERATIONAL_TIMEZONE } from 'config';
 import { ClickHouseService } from '../../clickhouse/clickhouse.service';
 import {
+  appUsageMapSql,
+  domainUsageMapSql,
+  usageArrayJoinSql,
+} from './payload-sql.util';
+import {
   AppCategory,
   AppUsageData,
   BrowserUsageData,
@@ -115,12 +120,12 @@ export class UsageDataService {
     try {
       const query = `
         SELECT 
-          JSONExtractString(payload, 'AppUsage') AS app_usage_json,
+          toJSONString(${appUsageMapSql()}) AS app_usage_json,
           timestamp
         FROM events_raw
         WHERE contractor_id = '${contractorId}'
           AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') = '${workdayStr}'
-          AND JSONHas(payload, 'AppUsage')
+          AND length(${appUsageMapSql()}) > 0
           ${agentFilter}
         ORDER BY timestamp
       `;
@@ -170,12 +175,12 @@ export class UsageDataService {
     try {
       const query = `
         SELECT 
-          JSONExtractString(payload, 'DomainUsage') AS browser_json,
+          toJSONString(${domainUsageMapSql()}) AS browser_json,
           timestamp
         FROM events_raw
         WHERE contractor_id = '${contractorId}'
           AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') = '${workdayStr}'
-          AND JSONHas(payload, 'DomainUsage')
+          AND length(${domainUsageMapSql()}) > 0
           ${agentFilter}
         ORDER BY timestamp
       `;
@@ -232,13 +237,13 @@ export class UsageDataService {
     try {
       const query = `
         SELECT 
-          JSONExtractString(payload, 'AppUsage') AS app_usage_json,
+          toJSONString(${appUsageMapSql()}) AS app_usage_json,
           timestamp
         FROM events_raw
         WHERE contractor_id = '${contractorId}'
           AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') >= '${fromStr}'
           AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') <= '${toStr}'
-          AND JSONHas(payload, 'AppUsage')
+          AND length(${appUsageMapSql()}) > 0
           ${agentFilter}
         ORDER BY timestamp
         ${useLimit ? `LIMIT ${useLimit}` : ''}
@@ -302,13 +307,13 @@ export class UsageDataService {
     try {
       const query = `
         SELECT 
-          JSONExtractString(payload, 'DomainUsage') AS browser_json,
+          toJSONString(${domainUsageMapSql()}) AS browser_json,
           timestamp
         FROM events_raw
         WHERE contractor_id = '${contractorId}'
           AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') >= '${fromStr}'
           AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') <= '${toStr}'
-          AND JSONHas(payload, 'DomainUsage')
+          AND length(${domainUsageMapSql()}) > 0
           ${agentFilter}
         ORDER BY timestamp
         ${useLimit ? `LIMIT ${useLimit}` : ''}
@@ -355,16 +360,16 @@ export class UsageDataService {
       const query = `
         SELECT 
           app_name AS appName,
-          sum(JSONExtractFloat(payload, 'AppUsage', app_name)) AS seconds,
+          sum(app_seconds) AS seconds,
           any(d.type) AS type,
           any(d.category) AS category
         FROM events_raw
-        ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app_name
+        ${usageArrayJoinSql(appUsageMapSql(), 'app_name', 'app_seconds')}
         LEFT JOIN apps_dimension d ON d.name = app_name
         WHERE contractor_id = '${contractorId}'
           AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') >= '${fromStr}'
           AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') <= '${toStr}'
-          AND JSONHas(payload, 'AppUsage')
+          AND length(${appUsageMapSql()}) > 0
         GROUP BY app_name
         HAVING seconds > 0
         ORDER BY seconds DESC
@@ -415,13 +420,13 @@ export class UsageDataService {
       const query = `
         SELECT 
           domain,
-          sum(JSONExtractFloat(payload, 'DomainUsage', domain)) AS seconds
+          sum(domain_seconds) AS seconds
         FROM events_raw
-        ARRAY JOIN JSONExtractKeys(payload, 'DomainUsage') AS domain
+        ${usageArrayJoinSql(domainUsageMapSql(), 'domain', 'domain_seconds')}
         WHERE contractor_id = '${contractorId}'
           AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') >= '${fromStr}'
           AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') <= '${toStr}'
-          AND JSONHas(payload, 'DomainUsage')
+          AND length(${domainUsageMapSql()}) > 0
         GROUP BY domain
         HAVING seconds > 0
         ORDER BY seconds DESC
@@ -474,16 +479,16 @@ export class UsageDataService {
         SELECT 
           contractor_id,
           app_name AS appName,
-          sum(JSONExtractFloat(payload, 'AppUsage', app_name)) AS seconds,
+          sum(app_seconds) AS seconds,
           any(d.type) AS type,
           any(d.category) AS category
         FROM events_raw
-        ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app_name
+        ${usageArrayJoinSql(appUsageMapSql(), 'app_name', 'app_seconds')}
         LEFT JOIN apps_dimension d ON d.name = app_name
         WHERE contractor_id IN (${contractorIdsList})
           AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') >= '${fromStr}'
           AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') <= '${toStr}'
-          AND JSONHas(payload, 'AppUsage')
+          AND length(${appUsageMapSql()}) > 0
         GROUP BY contractor_id, app_name
         HAVING seconds > 0
         ORDER BY contractor_id, seconds DESC
@@ -555,13 +560,13 @@ export class UsageDataService {
         SELECT 
           contractor_id,
           domain,
-          sum(JSONExtractFloat(payload, 'DomainUsage', domain)) AS seconds
+          sum(domain_seconds) AS seconds
         FROM events_raw
-        ARRAY JOIN JSONExtractKeys(payload, 'DomainUsage') AS domain
+        ${usageArrayJoinSql(domainUsageMapSql(), 'domain', 'domain_seconds')}
         WHERE contractor_id IN (${contractorIdsList})
           AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') >= '${fromStr}'
           AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') <= '${toStr}'
-          AND JSONHas(payload, 'DomainUsage')
+          AND length(${domainUsageMapSql()}) > 0
         GROUP BY contractor_id, domain
         HAVING seconds > 0
         ORDER BY contractor_id, seconds DESC

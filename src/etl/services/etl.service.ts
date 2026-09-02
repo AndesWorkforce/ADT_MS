@@ -948,6 +948,30 @@ export class EtlService {
           WHERE contractor_id = '${contractorId}'
             AND ${toDateTZ('session_start')} = toDate('${workdayStr}')
         `);
+      } else {
+        // Modo "all pending": borrar las filas de sesiones que siguen ABIERTAS.
+        //
+        // El filtro de idempotencia de abajo excluye todo par (session_id,
+        // agent_id) que ya exista en session_summary, asi que una sesion en curso
+        // quedaba congelada con lo que vio el PRIMER ETL y nunca se refrescaba.
+        // Caso real medido: una sesion registrada como 14:44:29 -> 14:49:16 (303 s,
+        // fila creada 14:49:26) cuando sus beats ya llegaban a 15:23:01 (152 beats,
+        // 2313 s). La duracion y el productivity_score quedaban calculados sobre
+        // 5 minutos de una sesion de 38, y ningun reproceso los corregia.
+        //
+        // Borrandolas aca, el NOT IN ya no las excluye y se recalculan enteras.
+        // Las sesiones cerradas no se tocan: su resultado es definitivo.
+        //
+        // `mutations_sync = 1` porque el DELETE es una mutacion asincrona: sin
+        // esperarla, el INSERT de abajo corre contra un borrado a medias y
+        // session_summary es un MergeTree plano, o sea que quedarian duplicados.
+        await this.clickHouseService.command(`
+          ALTER TABLE session_summary DELETE
+          WHERE session_id IN (
+            SELECT session_id FROM sessions_raw FINAL WHERE session_end IS NULL
+          )
+          SETTINGS mutations_sync = 1
+        `);
       }
 
       // 2) Construir scope interno + filtro de idempotencia según el modo.

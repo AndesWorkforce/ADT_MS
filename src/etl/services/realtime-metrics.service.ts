@@ -12,6 +12,11 @@ import {
   toStartOfOperationalDay,
 } from 'config';
 import { ClickHouseService } from '../../clickhouse/clickhouse.service';
+import {
+  appUsageMapSql,
+  domainUsageMapSql,
+  usageArrayJoinSql,
+} from './payload-sql.util';
 import { UsageDataService } from './usage-data.service';
 import { ContractorActivity15sDto } from '../dto/contractor-activity-15s.dto';
 import {
@@ -410,13 +415,13 @@ export class RealtimeMetricsService {
       SELECT 
         agent_id,
         app,
-        sum(JSONExtractFloat(payload, 'AppUsage', app)) AS seconds
+        sum(app_seconds) AS seconds
       FROM events_raw
-      ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app
+      ${usageArrayJoinSql(appUsageMapSql(), 'app', 'app_seconds')}
       WHERE contractor_id = '${contractorId}'
         AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') = '${workdayStr}'
         AND agent_id IN (${agentIdsList})
-        AND JSONHas(payload, 'AppUsage')
+        AND length(${appUsageMapSql()}) > 0
       GROUP BY agent_id, app
       HAVING seconds > 0
     `;
@@ -468,13 +473,13 @@ export class RealtimeMetricsService {
       SELECT 
         agent_id,
         domain,
-        sum(JSONExtractFloat(payload, 'DomainUsage', domain)) AS seconds
+        sum(domain_seconds) AS seconds
       FROM events_raw
-      ARRAY JOIN JSONExtractKeys(payload, 'DomainUsage') AS domain
+      ${usageArrayJoinSql(domainUsageMapSql(), 'domain', 'domain_seconds')}
       WHERE contractor_id = '${contractorId}'
         AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') = '${workdayStr}'
         AND agent_id IN (${agentIdsList})
-        AND JSONHas(payload, 'DomainUsage')
+        AND length(${domainUsageMapSql()}) > 0
       GROUP BY agent_id, domain
       HAVING seconds > 0
     `;
@@ -521,14 +526,14 @@ export class RealtimeMetricsService {
       SELECT 
         agent_id,
         app,
-        sum(JSONExtractFloat(payload, 'AppUsage', app)) AS seconds
+        sum(app_seconds) AS seconds
       FROM events_raw
-      ARRAY JOIN JSONExtractKeys(payload, 'AppUsage') AS app
+      ${usageArrayJoinSql(appUsageMapSql(), 'app', 'app_seconds')}
       WHERE contractor_id = '${contractorId}'
         AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') >= '${fromStr}'
         AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') <= '${toStr}'
         AND agent_id IN (${agentIdsList})
-        AND JSONHas(payload, 'AppUsage')
+        AND length(${appUsageMapSql()}) > 0
       GROUP BY agent_id, app
       HAVING seconds > 0
     `;
@@ -582,14 +587,14 @@ export class RealtimeMetricsService {
       SELECT 
         agent_id,
         domain,
-        sum(JSONExtractFloat(payload, 'DomainUsage', domain)) AS seconds
+        sum(domain_seconds) AS seconds
       FROM events_raw
-      ARRAY JOIN JSONExtractKeys(payload, 'DomainUsage') AS domain
+      ${usageArrayJoinSql(domainUsageMapSql(), 'domain', 'domain_seconds')}
       WHERE contractor_id = '${contractorId}'
         AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') >= '${fromStr}'
         AND toDate(timestamp, '${OPERATIONAL_TIMEZONE}') <= '${toStr}'
         AND agent_id IN (${agentIdsList})
-        AND JSONHas(payload, 'DomainUsage')
+        AND length(${domainUsageMapSql()}) > 0
       GROUP BY agent_id, domain
       HAVING seconds > 0
     `;
