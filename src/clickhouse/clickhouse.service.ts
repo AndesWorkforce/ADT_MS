@@ -64,6 +64,27 @@ export class ClickHouseService implements OnModuleInit, OnModuleDestroy {
       database: envs.clickhouse.database,
       request_timeout: 300000,
       max_open_connections: 10,
+      // ClickHouse corre en OTRO servidor, asi que estos sockets cruzan la red y
+      // los puede cerrar tanto ClickHouse (keep_alive_timeout, 3s por default)
+      // como un firewall o NAT intermedio.
+      //
+      // @clickhouse/client 0.2.x trae keep-alive activado con
+      // `retry_on_expired_socket: false`. Con ese default, cuando el pool
+      // entrega un socket que el otro extremo ya cerro, la request muere con
+      // "socket hang up" y **el evento se pierde**: SaveEventProcessor no lo
+      // reencola. Era intermitente porque solo pasa cuando el socket estuvo
+      // ocioso justo mas que el timeout del servidor.
+      keep_alive: {
+        enabled: true,
+        // Por debajo del keep_alive_timeout del servidor, que en este ClickHouse
+        // es 10s (verificado en system.server_settings), no los 3s que trae por
+        // defecto. Con ~118ms de RTT hasta el otro servidor, reciclar cada 2.5s
+        // -el default del cliente- desperdicia handshakes sin necesidad.
+        socket_ttl: 8000,
+        // La mitigacion documentada para este error: reintenta con un socket
+        // nuevo en vez de fallar.
+        retry_on_expired_socket: true,
+      },
     });
 
     await this.client.ping();
