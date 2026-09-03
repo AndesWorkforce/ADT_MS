@@ -117,6 +117,26 @@ const APPS: Array<{ name: string; category: Category }> = [
   { name: 'Steamwebhelper', category: 'non_productive' },
   { name: 'Netflix', category: 'non_productive' },
   { name: 'VLC', category: 'non_productive' },
+  // --- Agregadas 2026-09-03 tras comparar con events_raw real ---
+  // Telefonia y escritorio remoto: mismo criterio que Dialpad/Cebod/Remote Desktop.
+  { name: 'Msrdc', category: 'productive' }, // nombre real del cliente de Remote Desktop
+  { name: '3cxsoftphone', category: 'productive' },
+  { name: 'Ringcentral', category: 'productive' }, // el agente NO emite 'RingCentral'
+  // Correo y gestion: mismo criterio que Microsoft Outlook / Notion.
+  { name: 'Outlook', category: 'productive' }, // el agente emite ambas variantes
+  { name: 'Superhuman', category: 'productive' },
+  { name: 'Clickup', category: 'productive' },
+  { name: 'Microsoftwhiteboard', category: 'productive' },
+  { name: 'Warp', category: 'productive' },
+  // Reuniones: neutral, igual que Teams.
+  { name: 'Zoom', category: 'neutral' },
+  // Navegadores y utilidades: neutral, igual que Chrome/Edge/Brave.
+  { name: 'Opera', category: 'neutral' },
+  { name: 'Photos', category: 'neutral' },
+  { name: 'Rize', category: 'neutral' },
+  // SIN IDENTIFICAR: 8.903 s/dia. Queda neutral para no premiar ni castigar
+  // hasta saber que es. Revisar con IT.
+  { name: 'Strwinclt', category: 'neutral' },
 ];
 
 // ---------------------------------------------------------------------------
@@ -189,6 +209,23 @@ const DOMAINS: Array<{ domain: string; category: Category }> = [
   { domain: 'tiktok.com', category: 'non_productive' },
   { domain: 'x.com', category: 'non_productive' },
   { domain: 'twitter.com', category: 'non_productive' },
+  // --- Agregados 2026-09-03 tras comparar con events_raw real ---
+  // Plataformas de trabajo de los clientes.
+  { domain: 'hillandponton.lightning.force.com', category: 'productive' },
+  { domain: 'tabakattorneys.sharepoint.com', category: 'productive' },
+  { domain: 'outlook.cloud.microsoft', category: 'productive' },
+  { domain: 'app.clickup.com', category: 'productive' },
+  { domain: 'app.ontra.ai', category: 'productive' },
+  { domain: 'signwell.com', category: 'productive' },
+  { domain: 'calendar.google.com', category: 'productive' },
+  { domain: 'app.acuityscheduling.com', category: 'productive' },
+  // Neutros: herramientas de uso mixto.
+  { domain: 'canva.com', category: 'neutral' },
+  { domain: 'zoom.us', category: 'neutral' },
+  { domain: 'linkedin.com', category: 'neutral' },
+  { domain: 'aviorair.com', category: 'neutral' }, // sin identificar, ver con IT
+  // Ocio.
+  { domain: 'flightradar24.com', category: 'non_productive' },
 ];
 
 function nowStr(): string {
