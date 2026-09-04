@@ -244,6 +244,28 @@ export class EtlService {
   private static readonly IDLE_THRESHOLD_SECONDS = 10;
 
   /**
+   * Tope para `beat_duration`, en segundos.
+   *
+   * El agente late cada 15s y reporta cuánto duró realmente el beat. Cuando la
+   * máquina se suspende o se bloquea deja de latir, y el primer beat al volver
+   * declara como duración TODO el hueco: se midieron beats de 785s y de 3.349s.
+   * Ese tiempo nunca se observó, pero se sumaba como tiempo trabajado e inflaba
+   * los reportes ~12%.
+   *
+   * El valor sale de la distribución real, no de una corazonada: sobre 2.183
+   * beats de producción la mediana es 15,18s y el p99,5 es 15,51s. Después no
+   * hay nada hasta los 785s. Solo 3 beats (0,14%) pasan siquiera de 20s, y los
+   * tres son huecos de suspensión.
+   *
+   * Por eso 60s —4x el intervalo nominal— no recorta ningún beat legítimo: deja
+   * margen de sobra para un beat lento por carga o GC, y aun así elimina
+   * prácticamente toda la inflación. Al no haber valores intermedios, cualquier
+   * tope entre 20s y 300s afecta exactamente a los mismos 3 beats; se elige el
+   * extremo permisivo para no discutir casos borde que no existen.
+   */
+  private static readonly BEAT_DURATION_MAX_SECONDS = 60;
+
+  /**
    * Expresiones SELECT compartidas por buildInsertActivityQuery y el force-reprocess.
    * Extrae del payload RAW todas las columnas de contractor_activity_15s, incluyendo
    * los campos del agente v2 (beat_duration, power_state, browser_source, señales de
@@ -295,7 +317,11 @@ export class EtlService {
     const keyboard = `if(${isV3}, ${f('keyboard_count')}, ${nested('Keyboard', 'InputsCount')})`;
     const mouse = `if(${isV3}, ${f('mouse_clicks')}, ${nested('Mouse', 'ClicksCount')})`;
     const idle = `if(${isV3}, ${f('idle_time')}, ${f('IdleTime')})`;
-    const rawBeat = `if(${isV3}, ${f('beat_duration')}, ${f('BeatDuration')})`;
+    const rawBeatRaw = `if(${isV3}, ${f('beat_duration')}, ${f('BeatDuration')})`;
+    // Se topea acá, en la ingesta, y no en cada consulta: `contractor_activity_15s`
+    // es la fuente comun de realtime-metrics, los resumenes de sesion y el uso de
+    // apps. Topeando en un solo lugar los tres quedan consistentes entre si.
+    const rawBeat = `least(${rawBeatRaw}, ${EtlService.BEAT_DURATION_MAX_SECONDS})`;
     const powerState = `if(${isV3}, ${f('power_state')}, ${f('PowerState')})`;
     const browserSource = `if(${isV3}, ${f('browser_source')}, ${f('BrowserSource')})`;
     const mic = `if(${isV3}, ${f('mic_active')}, ${nested('PresenceSignals', 'microphone_active')})`;
